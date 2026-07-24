@@ -18,7 +18,7 @@ AI Article Studio is a single-user local workspace for producing illustrated art
 
 ## Tech Stack
 
-Python 3.13 · uv · FastAPI · SQLAlchemy · SQLite / PostgreSQL · Pydantic · Jinja2 · HTMX · SSE · httpx · pytest · Ruff
+Python 3.13 · uv · FastAPI · SQLAlchemy · SQLite / PostgreSQL · Pydantic · Jinja2 · Vanilla JavaScript · SSE · httpx · pytest · Ruff
 
 ## Run Locally
 
@@ -44,6 +44,8 @@ uv run pytest
 uv run ruff check .
 node --check src/ai_article_studio/static/stream.js
 ```
+
+For a code-oriented learning path and interview preparation guide (Chinese), see [Learning Guide](docs/learning-guide.zh-CN.md).
 
 ## Project Boundary
 

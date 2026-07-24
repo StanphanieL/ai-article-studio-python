@@ -18,7 +18,7 @@ AI Article Studio 是一个单用户本地创作工作台：你可以逐步确�
 
 ## 技术栈
 
-Python 3.13 · uv · FastAPI · SQLAlchemy · SQLite / PostgreSQL · Pydantic · Jinja2 · HTMX · SSE · httpx · pytest · Ruff
+Python 3.13 · uv · FastAPI · SQLAlchemy · SQLite / PostgreSQL · Pydantic · Jinja2 · 原生 JavaScript · SSE · httpx · pytest · Ruff
 
 ## 快速启动
 
@@ -44,6 +44,10 @@ uv run pytest
 uv run ruff check .
 node --check src/ai_article_studio/static/stream.js
 ```
+
+## 学习本项目
+
+从运行 Mock 流程到能独立讲清架构、定位问题和完成小改动，请阅读 [项目学习与面试教程](docs/learning-guide.zh-CN.md)。
 
 ## 项目边界
 
