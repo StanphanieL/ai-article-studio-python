@@ -1,0 +1,8 @@
+/* Customer-facing polish: keep implementation diagnostics out of the workspace. */
+.workspace-tools { grid-template-columns: minmax(0, 1fr); }
+.workspace-tools .config-card { margin: 0; min-width: 0; }
+.task-card-header { justify-content: flex-start; }
+
+@media (max-width: 820px) {
+  .workspace-tools { grid-template-columns: 1fr; }
+}

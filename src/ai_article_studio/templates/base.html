@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}AI Article Studio{% endblock %}</title>
+    <link rel="stylesheet" href="/static/app.css?v=20260724-homepage-displaytype1">
+    <link rel="stylesheet" href="/static/client-ui.css?v=20260723-stage-action-footer1">
+    <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/article/list">AI Article Studio</a>
+      <nav aria-label="主导航"><a href="/article/list">任务列表</a></nav>
+    </header>
+    <main class="page-shell">
+      {% block content %}{% endblock %}
+    </main>
+    <script src="/static/stream.js?v=20260724-image-recovery1" defer></script>
+  </body>
+</html>

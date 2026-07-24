@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+*.db
+*.sqlite*
+data/
+uploads/
+.DS_Store
+.sdd/
+.schema agent_log
+docs/superpowers/

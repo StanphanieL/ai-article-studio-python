@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}任务列表 · AI Article Studio{% endblock %}
+{% block content %}
+<div class="home-page">
+  <section class="home-hero" aria-labelledby="home-title">
+    <div class="home-hero-copy">
+      <p class="home-eyebrow">AI Article Studio</p>
+      <h1 id="home-title"><span class="home-title-lead">把一个想法</span><span class="home-title-main">写成完整图文稿</span></h1>
+      <p class="home-lede">从选题、正文到配图与交付，每一步都可以由你决定，也可以一键完成。</p>
+      <ol class="home-flow" aria-label="创作流程">
+        <li><span>01</span><div><strong>确定方向</strong><small>从一个选题开始</small></div></li>
+        <li><span>02</span><div><strong>完成创作</strong><small>逐步生成并随时调整</small></div></li>
+        <li><span>03</span><div><strong>图文交付</strong><small>评审后导出成稿</small></div></li>
+      </ol>
+    </div>
+
+    <form class="create-card home-create-card" id="new-article" method="post" action="/article/create" data-create-form>
+      <div class="home-create-heading">
+        <div>
+          <p class="home-form-kicker">开始创作</p>
+          <label for="topic">这次想写什么？</label>
+        </div>
+        <span>从一个选题开始</span>
+      </div>
+      <textarea id="topic" name="topic" rows="3" required placeholder="例如：如何用状态机让 AI 内容生成变得可控"></textarea>
+      {% set provider_labels = {'AUTO': '自动选择', 'PEXELS': 'Pexels 图库', 'SILICONFLOW': 'SiliconFlow 生成', 'GOOGLE_AI': 'Google AI 生成', 'MOCK': '示例图片'} %}
+      <details class="create-settings" aria-label="创作设置">
+        <summary>创作设置</summary>
+        <div class="create-settings-body"><div class="create-settings-grid">
+            <label for="style">内容风格<select id="style" name="style"><option value="TECH">技术解析</option><option value="BUSINESS">商业表达</option><option value="POPULAR">大众科普</option></select></label>
+            <label for="text-model">文本模型<input id="text-model" name="text_model" value="{{ default_config.textModel }}" required></label>
+            <label for="content-length">正文长度<select id="content-length" name="content_length_level"><option value="SHORT" {% if default_config.contentLengthLevel == 'SHORT' %}selected{% endif %}>简短</option><option value="MEDIUM" {% if default_config.contentLengthLevel == 'MEDIUM' %}selected{% endif %}>标准</option><option value="LONG" {% if default_config.contentLengthLevel == 'LONG' %}selected{% endif %}>长文</option></select></label>
+            <label for="image-provider">图片来源<select id="image-provider" name="image_provider">{% for choice in image_choices %}<option value="{{ choice.value }}" {% if default_config.imageProvider == choice.value %}selected{% endif %}>{{ provider_labels.get(choice.value, choice.value) }}</option>{% endfor %}</select></label>
+            <label for="image-count-mode">图片数量<select id="image-count-mode" name="image_count_mode" data-image-count-mode><option value="AUTO" {% if default_config.imageCountMode == 'AUTO' %}selected{% endif %}>自动推荐</option><option value="CUSTOM" {% if default_config.imageCountMode == 'CUSTOM' %}selected{% endif %}>自定义</option></select></label>
+            <label data-image-count-field {% if default_config.imageCountMode != 'CUSTOM' %}hidden{% endif %}>图片张数（3–8）<input name="image_count" type="number" min="3" max="8" value="{{ default_config.imageCount or '' }}" {% if default_config.imageCountMode != 'CUSTOM' %}disabled{% endif %}></label>
+          </div>
+          <details class="create-advanced-settings"><summary>高级设置</summary><div><label>温度<input name="temperature" type="number" step="0.1" min="0" max="2" value="{{ default_config.temperature }}"></label><label>最大输出 token<input name="max_completion_tokens" type="number" min="1" value="{{ default_config.maxCompletionTokens }}"></label></div></details>
+        </div>
+      </details>
+      <div class="home-create-actions">
+        <div class="button-row">
+          <button class="button primary" name="mode" value="step" type="submit">开始逐步创作</button>
+          <button class="button secondary" name="mode" value="one_click" type="submit">一键完成</button>
+        </div>
+        <p>逐步创作可在每个阶段确认内容。</p>
+      </div>
+      <p class="error" data-create-error aria-live="assertive" hidden></p>
+    </form>
+  </section>
+
+  <section class="home-library-heading" aria-labelledby="recent-articles-title">
+    <div>
+      <p class="home-eyebrow">已保存的文章</p>
+      <h2 id="recent-articles-title">最近创作</h2>
+      <p>继续未完成的内容，或回看已经交付的图文稿。</p>
+    </div>
+    <p class="home-library-count"><strong>{{ total }}</strong><span>篇文章</span></p>
+  </section>
+
+  {% if articles %}
+  <section class="task-grid home-task-grid" aria-label="文章列表">
+    {% for task in task_cards %}
+    {% set article = task.article %}
+    <article class="task-card home-task-card" data-task-card data-task-id="{{ article.task_id }}" data-task-state="{{ task.state }}">
+      <a class="task-card-link" href="/article/detail/{{ article.task_id }}" aria-label="打开任务：{{ article.selected_title or article.topic }}">
+        <div class="task-card-header">
+          <p class="task-status {{ task.tone }}" aria-label="任务状态：{{ task.label }}">
+            <span class="task-status-icon{% if task.state in ['queued', 'running'] %} spinner{% endif %}" aria-hidden="true">{{ task.icon }}</span>
+            <span>{{ task.label }}</span>
+          </p>
+          <span class="task-card-open" aria-hidden="true">↗</span>
+        </div>
+        <h3>{{ article.selected_title or article.topic }}</h3>
+        <p class="task-card-topic"><span>选题</span>{{ article.topic }}</p>
+        <footer><span>最后更新</span><time>{{ article.update_time.strftime('%Y-%m-%d %H:%M') }}</time></footer>
+      </a>
+      <div class="task-card-actions">
+        {% if task.is_cancelling %}
+        <button class="task-delete-button" type="button" disabled data-delete-disabled aria-describedby="delete-hint-{{ article.task_id }}">正在取消并删除…</button>
+        <p class="task-delete-hint" id="delete-hint-{{ article.task_id }}">当前生成结束后，将彻底清除这篇文章及图片。</p>
+        {% else %}
+        <form class="task-card-delete" method="post" action="/article/{{ article.task_id }}/delete" data-delete-form data-confirm="确认永久删除这篇文章吗？将取消生成并清除文章、图片及相关记录，无法恢复。">
+          <button class="task-delete-button" type="submit">删除</button>
+        </form>
+        <p class="error task-delete-error" data-delete-error aria-live="assertive" hidden></p>
+        {% endif %}
+      </div>
+    </article>
+    {% endfor %}
+  </section>
+  {% else %}
+  <section class="empty home-empty"><span aria-hidden="true">✦</span><h2>第一篇文章，从一个想法开始</h2><p>写下选题，AI 会陪你完成从内容到图文交付的整个过程。</p></section>
+  {% endif %}
+</div>
+{% endblock %}

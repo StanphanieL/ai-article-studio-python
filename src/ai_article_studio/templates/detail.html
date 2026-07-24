@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}{{ article.selected_title or article.topic }} · AI Article Studio{% endblock %}
+{% block content %}
+{% set step_order = ['title', 'outline', 'content', 'images', 'delivery'] %}
+{% set step_labels = {'title': '标题', 'outline': '大纲', 'content': '正文', 'images': '配图', 'delivery': '交付'} %}
+{% set image_source_labels = {'PEXELS': 'Pexels 图库', 'SILICONFLOW': 'SiliconFlow 生成', 'GOOGLE_AI': 'Google AI 生成', 'MOCK': '示例图片', 'FALLBACK': '示例图片'} %}
+{% set image_placement_labels = {'COVER': '文章封面', 'AFTER_INTRO': '导语之后', 'AFTER_PARAGRAPH': '指定段落之后', 'SECTION_END': '章节末尾'} %}
+{% set image_layout_labels = {'HERO': '大图', 'WIDE': '宽图', 'STANDARD': '标准', 'COMPACT': '紧凑'} %}
+{% set supplied_steps = workflow_steps | default([], true) %}
+{% set has_wizard_steps = supplied_steps and supplied_steps[0].key is defined %}
+{% set navigation = namespace(reachable=['title']) %}
+{% if has_wizard_steps %}
+  {% set navigation.reachable = [] %}
+  {% for step in supplied_steps %}{% if step.reachable | default(false) %}{% set navigation.reachable = navigation.reachable + [step.key] %}{% endif %}{% endfor %}
+{% else %}
+  {% if article.selected_title %}{% set navigation.reachable = navigation.reachable + ['outline'] %}{% endif %}
+  {% if article.outline %}{% set navigation.reachable = navigation.reachable + ['content'] %}{% endif %}
+  {% if article.content %}{% set navigation.reachable = navigation.reachable + ['images'] %}{% endif %}
+  {% if article.final_markdown %}{% set navigation.reachable = navigation.reachable + ['delivery'] %}{% endif %}
+{% endif %}
+{% set reachable_steps = navigation.reachable %}
+{% set workflow_step = default_step | default('', true) %}
+{% if workflow_step not in step_order %}
+  {% if article.final_markdown %}{% set workflow_step = 'delivery' %}
+  {% elif article.content %}{% set workflow_step = 'images' %}
+  {% elif article.outline %}{% set workflow_step = 'content' %}
+  {% elif article.selected_title %}{% set workflow_step = 'outline' %}
+  {% else %}{% set workflow_step = 'title' %}
+  {% endif %}
+{% endif %}
+{% set requested_step = current_step | default('', true) %}
+{% if requested_step in step_order %}{% set active_step = requested_step %}{% else %}{% set active_step = workflow_step %}{% endif %}
+{% set active_index = step_order.index(active_step) %}
+{% set workflow_index = step_order.index(workflow_step) %}
+
+<a class="back-link" href="/article/list">← 返回任务列表</a>
+{% if article.status in ['QUEUED', 'RUNNING', 'CANCELLING'] %}
+<noscript><meta http-equiv="refresh" content="2"></noscript>
+{% endif %}
+
+<section class="detail-head">
+  <div>
+    <h1>{{ article.selected_title or article.topic }}</h1>
+    {% if article.selected_title %}<p>{{ article.topic }}</p>{% endif %}
+  </div>
+</section>
+
+<nav class="wizard-progress" data-wizard-progress aria-label="文章创作进度">
+  {% if has_wizard_steps %}
+    {% for step in supplied_steps %}
+      {% if step.reachable %}
+      <a class="wizard-progress-step{% if step.complete %} complete{% endif %}{% if step.current %} current{% endif %}" href="/article/detail/{{ article.task_id }}?step={{ step.key }}#{{ step.key }}-stage" {% if step.current %}aria-current="step"{% endif %}>
+        <span>{{ loop.index }}</span><strong>{{ step.label }}</strong>
+      </a>
+      {% else %}
+      <span class="wizard-progress-step locked" aria-disabled="true" title="请先完成前置步骤"><span>{{ loop.index }}</span><strong>{{ step.label }}</strong></span>
+      {% endif %}
+    {% endfor %}
+  {% else %}
+    {% for step_id in step_order %}
+    {% set reachable = step_id in reachable_steps %}
+    {% set is_active = step_id == active_step %}
+    {% set complete = loop.index0 < workflow_index or (step_id == 'delivery' and article.phase == 'COMPLETED') %}
+    {% if reachable %}<a class="wizard-progress-step{% if complete %} complete{% endif %}{% if is_active %} current{% endif %}" href="/article/detail/{{ article.task_id }}?step={{ step_id }}#{{ step_id }}-stage" {% if is_active %}aria-current="step"{% endif %}><span>{{ loop.index }}</span><strong>{{ step_labels[step_id] }}</strong></a>{% else %}<span class="wizard-progress-step locked" aria-disabled="true" title="请先完成前置步骤"><span>{{ loop.index }}</span><strong>{{ step_labels[step_id] }}</strong></span>{% endif %}
+    {% endfor %}
+  {% endif %}
+</nav>
+
+<section class="wizard-workspace" data-wizard-workspace data-active-step="{{ active_step }}">
+  {% if active_step == 'title' %}
+  <article class="content-card wizard-stage" id="title-stage" data-step-card="title">
+    <div class="card-heading"><h2>文章标题</h2></div>
+    <p class="stage-progress" data-title-progress aria-live="polite" hidden></p>
+    <p class="error" data-title-error aria-live="assertive" hidden></p>
+    {% if article.selected_title %}
+    <section class="confirmed-title"><strong>{{ article.selected_title }}</strong><p class="muted">如需更换标题，确认后会清空大纲、正文、配图和评审结果。</p></section>
+    <details class="change-title" data-change-title>
+      <summary>更换标题</summary>
+      <p class="muted">这是一次不可逆的工作流重置，请在提交前确认新标题。</p>
+      <form class="inline-form" method="post" action="/article/{{ article.task_id }}/title" data-title-confirm-form data-change-title-form data-change-title-confirm="required" data-confirm="更换标题会清空大纲、正文、配图和评审结果。确定继续吗？">
+        <input name="selected_title" value="{{ article.selected_title }}" required>
+        <button class="button secondary" type="submit" data-change-title-submit>确认更换标题</button>
+      </form>
+    </details>
+    {% elif title_options %}
+    <div class="choice-list">{% for item in title_options %}<form method="post" action="/article/{{ article.task_id }}/title" data-title-confirm-form><input type="hidden" name="selected_title" value="{{ item.title }}"><button class="choice" type="submit"><strong>{{ item.title }}</strong><span>{{ item.reason }}</span></button></form>{% endfor %}</div>
+    <form class="inline-form" method="post" action="/article/{{ article.task_id }}/title" data-title-confirm-form><input name="selected_title" placeholder="或者输入自定义标题" required><button class="button secondary" type="submit">确认自定义标题</button></form>
+    <aside class="workflow-utilities title-one-click">
+      <strong>直接生成整篇文章</strong>
+      <p>将采用第一条推荐标题，自动完成后续创作。</p>
+      <form method="post" action="/article/{{ article.task_id }}/one-click" data-job-form data-job-url="/article/{{ article.task_id }}/jobs/one-click" data-pending-text="正在提交一键生成…"><button class="button secondary" type="submit">采用推荐标题并一键完成</button></form>
+    </aside>
+    {% else %}
+    <p class="wizard-empty">生成标题候选后，会在这里展示备选方向；也可以直接输入自定义标题。</p>
+    <form class="inline-form" method="post" action="/article/{{ article.task_id }}/title" data-title-confirm-form><input name="selected_title" placeholder="输入自定义标题" required><button class="button secondary" type="submit">确认标题</button></form>
+    {% endif %}
+  </article>
+
+  {% elif active_step == 'outline' %}
+  <article class="content-card wizard-stage" id="outline-stage" data-step-card="outline">
+    <div class="card-heading"><h2>文章大纲</h2></div>
+    {% if article.outline %}
+    <div class="markdown-tabs" data-markdown-tabs="outline">
+      <div class="markdown-tablist" role="tablist" aria-label="大纲查看方式">
+        <button id="outline-preview-tab" type="button" role="tab" aria-selected="true" aria-controls="outline-preview-panel" data-markdown-tab="preview">预览</button>
+        <button id="outline-edit-tab" type="button" role="tab" aria-selected="false" aria-controls="outline-edit-panel" data-markdown-tab="edit" tabindex="-1">编辑大纲</button>
+      </div>
+      <section id="outline-preview-panel" role="tabpanel" aria-labelledby="outline-preview-tab" data-markdown-panel="preview">
+        <div class="article-preview outline-preview" data-outline-preview aria-label="大纲预览">{{ outline_html | safe }}</div>
+        {% if outline_editable | default(false) %}
+        <form class="editor-actions" method="post" action="/article/{{ article.task_id }}/outline" data-pending-form data-outline-confirm-form>
+          <input type="hidden" name="outline_json" value="{{ outline_text }}">
+          <button class="button primary" type="submit">确认大纲并进入正文</button>
+          <span class="muted">需要调整时，可切换到“编辑大纲”。</span>
+        </form>
+        {% endif %}
+      </section>
+      <section id="outline-edit-panel" role="tabpanel" aria-labelledby="outline-edit-tab" data-markdown-panel="edit" hidden>
+        <form method="post" action="/article/{{ article.task_id }}/outline" data-pending-form data-outline-form>
+          <label class="visually-hidden" for="outline-editor">编辑大纲</label>
+          <textarea id="outline-editor" class="editor compact" name="outline_json" rows="10" required data-outline-editor data-outline-confirmation="{% if outline_editable | default(false) %}required{% else %}saved{% endif %}">{{ outline_text }}</textarea>
+          <div class="editor-actions"><button class="button secondary" type="submit" data-outline-save {% if not (outline_editable | default(false)) %}hidden disabled{% endif %}>{% if outline_editable | default(false) %}确认并保存大纲{% else %}保存大纲修改{% endif %}</button><span class="muted" data-outline-status>{% if outline_editable | default(false) %}确认后进入正文生成。{% else %}大纲已保存；修改内容后才需要再次保存。{% endif %}</span></div>
+        </form>
+      </section>
+    </div>
+    {% else %}
+    <p class="wizard-empty">点击“生成大纲”，确认后即可进入正文。</p>
+    {% endif %}
+  </article>
+
+  {% elif active_step == 'content' %}
+  <article class="content-card wizard-stage" id="content-stage" data-step-card="content">
+    <div class="card-heading"><h2>正文</h2></div>
+    <p id="stream-progress" class="muted" aria-live="polite">{% if not article.content %}点击“生成正文”后，内容会显示在这里。{% endif %}</p>
+    {% if article.content %}
+    <div class="markdown-tabs" data-markdown-tabs="content">
+      <div class="markdown-tablist" role="tablist" aria-label="正文查看方式">
+        <button id="content-preview-tab" type="button" role="tab" aria-selected="true" aria-controls="content-preview-panel" data-markdown-tab="preview">预览</button>
+        <button id="content-edit-tab" type="button" role="tab" aria-selected="false" aria-controls="content-edit-panel" data-markdown-tab="edit" tabindex="-1">编辑正文</button>
+      </div>
+      <section id="content-preview-panel" role="tabpanel" aria-labelledby="content-preview-tab" data-markdown-panel="preview">
+        <section class="article-preview" data-content-preview aria-label="文章预览">{{ content_html | safe }}</section>
+      </section>
+      <section id="content-edit-panel" role="tabpanel" aria-labelledby="content-edit-tab" data-markdown-panel="edit" hidden>
+        <form method="post" action="/article/{{ article.task_id }}/content" data-pending-form data-content-form {% if article.image_results or article.final_markdown %}data-confirm="保存正文会清空配图、图文稿和评审结果。确定继续吗？"{% endif %}><label class="visually-hidden" for="content-editor">编辑正文</label><textarea id="content-editor" class="editor" name="content" rows="18" required>{{ article.content }}</textarea><button class="button secondary" type="submit">保存正文修改</button></form>
+      </section>
+    </div>
+    {% else %}
+    <form method="post" action="/article/{{ article.task_id }}/content" data-pending-form data-content-form><textarea id="content-editor" class="editor" name="content" rows="18" required></textarea><button class="button secondary" type="submit">保存正文修改</button></form>
+    {% endif %}
+  </article>
+
+  {% elif active_step == 'images' %}
+  <article class="content-card wizard-stage" id="images-stage" data-step-card="images">
+    <div class="card-heading"><h2>配图</h2><span>{{ image_results|length }}/{{ image_prompts|length }} 已生成</span></div>
+    {% if image_prompts %}
+      {% if not image_results or has_partial_images %}
+      <form class="image-generation-form" method="post" action="/article/{{ article.task_id }}/images" data-job-form data-job-url="/article/{{ article.task_id }}/jobs/images" data-pending-text="正在生成图片…" data-image-generation-form><label>图片来源<select name="provider">{% for choice in image_choices %}<option value="{{ choice.value }}" {% if config.imageProvider == choice.value %}selected{% endif %}>{{ choice.label }}</option>{% endfor %}</select></label><p class="muted">自动选择会匹配合适的图片来源；手动选择将只使用所选来源。</p><button class="button primary" type="submit">{% if has_partial_images %}继续生成剩余 {{ image_prompts|length - image_results|length }} 张{% else %}生成 {{ image_prompts|length }} 张图片{% endif %}</button></form>
+      {% endif %}
+      <section class="image-storyboard" data-image-storyboard data-reorder-url="/article/{{ article.task_id }}/image-plan/reorder" data-anchor-paragraphs='{{ image_anchor_paragraphs | tojson }}' aria-label="配图管理">
+        <header class="storyboard-intro"><div><strong>配图管理</strong><p>默认显示图片位置与来源；需要时可调整顺序、位置或画面描述。</p></div><span>封面固定在首位</span></header>
+        {% for prompt in image_prompts %}
+        {% set result = image_results[loop.index0] if image_results and image_results|length > loop.index0 else none %}
+        {% set is_cover = prompt.placement == 'COVER' %}
+        <article class="storyboard-card{% if is_cover %} is-fixed{% endif %}" data-image-plan-card data-index="{{ loop.index0 }}" data-image-fixed="{{ 'true' if is_cover else 'false' }}" draggable="{{ 'false' if is_cover else 'true' }}" tabindex="0">
+          <header class="storyboard-card-header"><span class="drag-handle" aria-hidden="true">⠿</span><div><span class="storyboard-number">配图 {{ loop.index }}</span><strong>{% if is_cover %}封面图{% else %}文中配图{% endif %}</strong></div><div class="storyboard-move-controls"><button type="button" class="icon-button" data-image-move="-1" aria-label="向前移动配图 {{ loop.index }}" {% if is_cover or loop.index0 == 1 %}disabled{% endif %}>←</button><button type="button" class="icon-button" data-image-move="1" aria-label="向后移动配图 {{ loop.index }}" {% if is_cover or loop.last %}disabled{% endif %}>→</button></div></header>
+          <div class="image-card-summary"><span class="image-placement-summary">位置：{% if prompt.placement == 'COVER' %}文章封面{% elif prompt.placement == 'AFTER_INTRO' %}导语之后{% elif prompt.placement == 'AFTER_PARAGRAPH' %}{{ prompt.anchorHeading }} · 第 {{ prompt.anchorParagraph }} 段之后{% else %}{{ prompt.anchorHeading }} · 章节末尾{% endif %}</span><span class="image-source-summary">来源：{% if result %}{{ image_source_labels.get(result.source, result.source) }}{% else %}待生成{% endif %}</span></div>
+          <details class="image-plan-editor">
+            <summary>编辑配图</summary>
+            <form method="post" action="/article/{{ article.task_id }}/image-plan/{{ loop.index0 }}" data-image-plan-form data-image-plan-index="{{ loop.index0 }}">
+              <div class="storyboard-fields">
+                <input type="hidden" name="visualRole" value="{{ prompt.visualRole }}" data-image-visual-field>
+                <label>放置位置<select name="placement" data-image-placement>{% for placement in image_placements %}<option value="{{ placement.value }}" {% if prompt.placement == placement.value %}selected{% endif %}>{{ image_placement_labels.get(placement.value, placement.value) }}</option>{% endfor %}</select></label>
+                <label>放置章节<select name="anchorHeading" data-image-anchor-heading><option value="">{% if prompt.placement in ['COVER', 'AFTER_INTRO'] %}不需要选择{% else %}选择文章章节{% endif %}</option>{% for heading in image_anchor_headings %}<option value="{{ heading }}" {% if prompt.anchorHeading == heading %}selected{% endif %}>{{ heading }}</option>{% endfor %}</select></label>
+                <label>章节内位置<select name="anchorParagraph" data-image-anchor-paragraph>{% set paragraphs = image_anchor_paragraphs.get(prompt.anchorHeading, []) %}<option value="0" {% if prompt.anchorParagraph == 0 %}selected{% endif %}>章节末尾</option>{% for paragraph in paragraphs %}<option value="{{ paragraph }}" {% if prompt.anchorParagraph == paragraph %}selected{% endif %}>第 {{ paragraph }} 段之后</option>{% endfor %}</select></label>
+                <label>展示尺寸<select name="layout">{% for layout in image_layouts %}<option value="{{ layout.value }}" {% if prompt.layout == layout.value %}selected{% endif %}>{{ image_layout_labels.get(layout.value, layout.value) }}</option>{% endfor %}</select></label>
+                <input type="hidden" name="stockQuery" value="{{ prompt.stockQuery }}" data-image-visual-field>
+              </div>
+              <details class="storyboard-copy"><summary>调整画面描述</summary><div class="storyboard-copy-fields"><input type="hidden" name="imageTitle" value="{{ prompt.imageTitle }}" data-image-visual-field><input type="hidden" name="usageScene" value="{{ prompt.usageScene }}" data-image-visual-field><input type="hidden" name="promptEn" value="{{ prompt.promptEn }}" data-image-visual-field><label>画面描述<textarea name="promptZh" rows="3" data-image-visual-field required>{{ prompt.promptZh }}</textarea></label></div></details>
+              <p class="image-plan-save-note" data-image-plan-error aria-live="polite" hidden></p>
+              <div class="storyboard-actions"><button class="button secondary" type="submit">保存编排</button><span class="muted">修改画面内容会清空这一轮图片与交付稿。</span></div>
+            </form>
+          </details>
+          {% if result %}
+          <figure class="storyboard-result"><img src="{{ result.imageUrl }}" alt="{{ result.imageTitle }}"><figcaption><strong>来源：{{ image_source_labels.get(result.source, result.source) }}</strong></figcaption></figure>
+          <p class="attribution-links">{% if result.sourceUrl %}<a href="{{ result.sourceUrl }}" target="_blank" rel="noopener noreferrer">查看来源</a>{% endif %}</p>
+          <form class="image-retry-form" method="post" action="/article/{{ article.task_id }}/image/{{ loop.index0 }}/retry" data-job-form data-job-url="/article/{{ article.task_id }}/jobs/image/{{ loop.index0 }}/retry" data-pending-text="正在重试图片…" {% if article.final_markdown %}data-confirm="重试此图会清空当前图文稿和评审，并回到合成步骤。确定继续吗？"{% endif %}><select name="provider">{% for choice in image_choices %}<option value="{{ choice.value }}" {% if result.source == choice.value %}selected{% endif %}>{{ choice.label }}</option>{% endfor %}</select><button class="button secondary" type="submit">重试此图</button></form>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </section>
+    {% else %}
+    <p class="wizard-empty">先生成配图方案，再选择图片来源并生成图片。</p>
+    {% endif %}
+  </article>
+
+  {% else %}
+  <article class="content-card wizard-stage" id="delivery-stage" data-step-card="delivery">
+    <div class="card-heading"><h2>交付稿</h2><span class="delivery-state {% if review_needs_revision %}blocked{% endif %}">{% if review_needs_revision %}{{ review.score }}/100 · 尚不可交付{% elif article.quality_score %}{{ article.quality_score }}/100{% else %}待评审{% endif %}</span></div>
+    {% if article.final_markdown %}
+      {% if review %}
+      <div class="review-summary {% if review_needs_revision %}blocked{% endif %}"><p class="score">{{ review.score }}<small>/100</small></p><div><strong>{% if review_needs_revision %}需先修订阻断问题{% else %}已通过质量检查{% endif %}</strong><p class="muted">{% if review_needs_revision %}评分不能覆盖交付阻断项。请先处理工作流面板中列出的 {{ review_blocking_issues|length }} 项问题。{% else %}图文稿已准备好，可预览或导出。{% endif %}</p></div></div>
+      {% if review_needs_revision and (review_issues or review_blocking_issues) %}<details class="review-details" data-review-issues><summary>查看修订建议</summary>{% if review_blocking_issues %}<div><strong>阻断项</strong><ul>{% for issue in review_blocking_issues %}<li>{{ issue }}</li>{% endfor %}</ul></div>{% endif %}{% if review_issues %}<div><strong>一般建议</strong><ul>{% for issue in review_issues %}<li>{{ issue }}</li>{% endfor %}</ul></div>{% endif %}</details>{% endif %}
+      {% endif %}
+      <details class="final-preview-details" data-final-preview-collapsed {% if not review_needs_revision %}open{% endif %}><summary><span>最终图文预览</span><span>{% if review_needs_revision %}修订后再核对图文稿{% else %}展开阅读{% endif %}</span></summary><section class="article-preview" data-final-preview aria-label="最终图文预览">{{ final_html | safe }}</section></details>
+      {% if can_export_final %}
+      <section class="delivery-export" data-final-export aria-label="文章导出"><div><strong>完整图文稿已通过评审</strong><p>导出内容包含最终 Markdown、图文 HTML 与归因信息。</p></div><div class="export-links"><a href="/api/article/export-markdown/{{ article.task_id }}">Markdown</a><a href="/api/article/export-html/{{ article.task_id }}">HTML</a><a href="/api/article/export-zip/{{ article.task_id }}">ZIP</a></div></section>
+      {% else %}
+      <p class="delivery-export-hint">{% if review_needs_revision %}完成阻断修订后可导出完整图文稿。{% else %}执行质量评审并通过后可导出完整图文稿。{% endif %}</p>
+      {% endif %}
+    {% else %}
+    <p class="wizard-empty">图片准备完成后，合成图文稿并执行质量评审。</p>
+    {% endif %}
+  </article>
+  {% endif %}
+
+  <nav class="wizard-card-navigation" aria-label="步骤浏览">
+    <div class="wizard-nav-previous">{% if active_index > 0 %}<a class="button secondary" href="/article/detail/{{ article.task_id }}?step={{ step_order[active_index - 1] }}#{{ step_order[active_index - 1] }}-stage">← 上一步</a>{% endif %}</div>
+    {% if active_step == workflow_step %}{% include "_workflow_panel.html" %}{% else %}<span class="wizard-nav-action-spacer" aria-hidden="true"></span>{% endif %}
+    <div class="wizard-nav-next">{% if active_index + 1 < step_order|length and step_order[active_index + 1] in reachable_steps %}<a class="button secondary" href="/article/detail/{{ article.task_id }}?step={{ step_order[active_index + 1] }}#{{ step_order[active_index + 1] }}-stage">下一步 →</a>{% endif %}</div>
+  </nav>
+</section>
+{% endblock %}
