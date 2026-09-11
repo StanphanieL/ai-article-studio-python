@@ -53,7 +53,7 @@ def test_stream_script_refreshes_the_workspace_after_a_successful_content_stream
 
     assert 'loadWizardStep("images", "replace", backgroundRefreshOptions)' in script
     assert 'searchParams.set("step", step)' in script
-    assert 'url.hash = `${step}-stage`' in script
+    assert "url.hash = `${step}-stage`" in script
 
 
 def test_stream_script_closes_stale_connections_and_does_not_retry_forever_after_network_failure() -> None:
@@ -63,7 +63,7 @@ def test_stream_script_closes_stale_connections_and_does_not_retry_forever_after
     assert "closeActiveStream(current);" in script
     assert "const streamIsCurrent" in script
     assert 'restore("连接中断，未保存不完整内容；请重试。")' in script
-    assert 'source.readyState === EventSource.CLOSED' not in script
+    assert "source.readyState === EventSource.CLOSED" not in script
 
 
 def test_job_polling_treats_cancellation_as_active_and_bypasses_stale_cache() -> None:
@@ -78,7 +78,7 @@ def test_one_click_polling_moves_the_workspace_to_the_current_background_stage()
     script = (Path(__file__).parents[1] / "src/ai_article_studio/static/stream.js").read_text(encoding="utf-8")
 
     assert "const workflowStepForAction" in script
-    assert 'if (targetStep && targetStep !== activeStep)' in script
+    assert "if (targetStep && targetStep !== activeStep)" in script
     assert 'await loadWizardStep(targetStep, "replace", backgroundRefreshOptions)' in script
 
 
@@ -88,7 +88,7 @@ def test_wizard_navigation_replaces_the_workspace_without_a_full_document_reload
     assert "const loadWorkspace = async" in script
     assert 'querySelector("main.page-shell")' in script
     assert "window.history.pushState" in script
-    assert "window.addEventListener(\"popstate" in script
+    assert 'window.addEventListener("popstate' in script
     assert 'if (status === "SUCCESS") {' in script
     assert 'await loadWorkspace(canonicalDetailUrl(panel, job), "replace", backgroundRefreshOptions)' in script
 
@@ -97,11 +97,11 @@ def test_background_workspace_refresh_is_quiet_and_keeps_the_reader_position() -
     script = (Path(__file__).parents[1] / "src/ai_article_studio/static/stream.js").read_text(encoding="utf-8")
     stylesheet = (Path(__file__).parents[1] / "src/ai_article_studio/static/app.css").read_text(encoding="utf-8")
 
-    assert 'const backgroundRefreshOptions = Object.freeze({ animate: false, preserveScroll: true, scroll: false });' in script
-    assert 'const replaceWorkspace = (current, next, { animate = true } = {})' in script
-    assert 'const scrollPosition = preserveScroll ? { x: window.scrollX, y: window.scrollY } : null;' in script
-    assert 'window.requestAnimationFrame(() => window.scrollTo(scrollPosition.x, scrollPosition.y));' in script
-    assert '.wizard-next-action [data-job-progress][hidden]{display:block!important;visibility:hidden}' in stylesheet
+    assert "const backgroundRefreshOptions = Object.freeze({ animate: false, preserveScroll: true, scroll: false });" in script
+    assert "const replaceWorkspace = (current, next, { animate = true } = {})" in script
+    assert "const scrollPosition = preserveScroll ? { x: window.scrollX, y: window.scrollY } : null;" in script
+    assert "window.requestAnimationFrame(() => window.scrollTo(scrollPosition.x, scrollPosition.y));" in script
+    assert ".wizard-next-action [data-job-progress][hidden]{display:block!important;visibility:hidden}" in stylesheet
 
 
 def test_wizard_navigation_uses_stage_anchors_and_reserves_space_for_the_sticky_progress_bar() -> None:

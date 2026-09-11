@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
 
 from .markdown_syntax import mask_inline_code_spans
 
@@ -50,11 +49,13 @@ _QUALITY_GATE_MESSAGES = frozenset(
 )
 
 
-@dataclass
 class _CodeFence:
-    marker: str
-    language: str
-    lines: list[str] = field(default_factory=list)
+    """Mutable parser state; delivery values use frozen dataclasses or Pydantic."""
+
+    def __init__(self, marker: str, language: str) -> None:
+        self.marker = marker
+        self.language = language
+        self.lines: list[str] = []
 
 
 def markdown_blocking_issues(markdown_text: str) -> list[str]:

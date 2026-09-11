@@ -6,13 +6,10 @@ from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from threading import Lock
 from time import sleep
 
+from .domain import JobAlreadyRunning, WorkflowCancellationRequested
 from .schemas import ImageProvider, WorkflowJobStatus, WorkflowRunMode
 from .supervisor import SupervisorAction
-from .workflow import ArticleWorkflow, WorkflowCancellationRequested
-
-
-class JobAlreadyRunning(RuntimeError):
-    """Raised when a task is already running locally or waiting in the queue."""
+from .workflow import ArticleWorkflow
 
 
 class JobRunner:

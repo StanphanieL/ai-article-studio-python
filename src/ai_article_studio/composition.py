@@ -135,9 +135,7 @@ def _take_cover(images: Sequence[ImageResultOption]) -> ImageResultOption | None
     return None
 
 
-def _resolve_image_slots(
-    images: Sequence[ImageResultOption], introduction: Sequence[str], sections: Sequence[_Section]
-) -> dict[str, list[ImageResultOption]]:
+def _resolve_image_slots(images: Sequence[ImageResultOption], introduction: Sequence[str], sections: Sequence[_Section]) -> dict[str, list[ImageResultOption]]:
     """Keep every unique image at its intended boundary in input order.
 
     A plan may legitimately contain more images than paragraph boundaries.  In
@@ -161,9 +159,7 @@ def _resolve_image_slots(
     return placements
 
 
-def _append_slot_images(
-    output: list[str], slots: dict[str, list[ImageResultOption]], slot: str
-) -> None:
+def _append_slot_images(output: list[str], slots: dict[str, list[ImageResultOption]], slot: str) -> None:
     output.extend(_image_markdown(image) for image in slots.get(slot, []))
 
 

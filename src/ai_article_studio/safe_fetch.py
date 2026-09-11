@@ -24,11 +24,7 @@ class DownloadedImage:
 
 def allowed_image_host(host: str) -> bool:
     normalized = host.lower().rstrip(".")
-    if (
-        _is_picsum_host(normalized)
-        or _is_bfl_delivery_host(normalized)
-        or _is_siliconflow_asset_host(normalized)
-    ):
+    if _is_picsum_host(normalized) or _is_bfl_delivery_host(normalized) or _is_siliconflow_asset_host(normalized):
         return True
     return normalized.endswith(
         (
@@ -50,9 +46,7 @@ def _is_picsum_host(host: str) -> bool:
 def _is_siliconflow_asset_host(host: str) -> bool:
     """Restrict vendor object-storage URLs to the documented SiliconFlow bucket prefix."""
 
-    return host.startswith("sf-maas") and host.endswith(
-        (".s3.us-east-1.amazonaws.com", ".oss-cn-shanghai.aliyuncs.com")
-    )
+    return host.startswith("sf-maas") and host.endswith((".s3.us-east-1.amazonaws.com", ".oss-cn-shanghai.aliyuncs.com"))
 
 
 def _is_bfl_delivery_host(host: str) -> bool:

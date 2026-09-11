@@ -589,7 +589,7 @@ def test_streaming_content_replaces_the_preview_with_the_contract_repair_before_
         repair_calls = 0
 
         def stream_content(self, *_args: object):  # type: ignore[no-untyped-def]
-            yield "# 标题\n\n## 第一步\n\n```json\n{\"resource\": \"扫码领取\"}\n```"
+            yield '# 标题\n\n## 第一步\n\n```json\n{"resource": "扫码领取"}\n```'
 
         def repair_content(self, *_args: object) -> str:
             self.repair_calls += 1
@@ -760,9 +760,7 @@ def test_retrying_one_image_returns_article_to_composition_flow(tmp_path: Path) 
             "/api/article/one-click-generate",
             json={"topic": "单图重试", "config": {"imageProvider": "MOCK"}},
         ).json()["data"]
-        retried = client.post(
-            f"/api/article/regenerate-image-result/{article['taskId']}?index=0&provider=MOCK"
-        ).json()["data"]
+        retried = client.post(f"/api/article/regenerate-image-result/{article['taskId']}?index=0&provider=MOCK").json()["data"]
         composed = client.post(f"/api/article/continue-workflow/{article['taskId']}").json()["data"]
         completed = client.post(f"/api/article/continue-workflow/{article['taskId']}").json()["data"]
 

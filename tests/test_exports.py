@@ -201,7 +201,7 @@ def test_markdown_renderer_preserves_standard_autolinks_while_removing_html_tags
 def test_markdown_renderer_preserves_inline_jsx_code_while_removing_real_html() -> None:
     from ai_article_studio.exports import render_markdown
 
-    rendered = render_markdown("使用 `<div className=\"grid\"><motion.div /></div>`。\n\n<span>真实裸 HTML</span>")
+    rendered = render_markdown('使用 `<div className="grid"><motion.div /></div>`。\n\n<span>真实裸 HTML</span>')
 
     assert '<code>&lt;div className="grid"&gt;&lt;motion.div /&gt;&lt;/div&gt;</code>' in rendered
     assert "<span>" not in rendered
@@ -224,10 +224,10 @@ def test_markdown_renderer_supports_fenced_code_nested_in_a_list() -> None:
 """
     )
 
-    assert '<ol>' in rendered
-    assert '<pre><code>' in rendered
-    assert '&lt;motion.button whileTap={{ scale: 0.98 }} /&gt;' in rendered
-    assert '<li><strong>下一步</strong></li>' in rendered
+    assert "<ol>" in rendered
+    assert "<pre><code>" in rendered
+    assert "&lt;motion.button whileTap={{ scale: 0.98 }} /&gt;" in rendered
+    assert "<li><strong>下一步</strong></li>" in rendered
 
 
 def test_markdown_renderer_does_not_discard_following_markdown_after_a_self_closing_html_tag() -> None:
@@ -249,10 +249,13 @@ def test_markdown_renderer_uses_only_controlled_figure_classes_for_image_metadat
 
 ![小图](/uploads/images/compact.svg)
 """
-    markdown_text = portable_markdown + """
+    markdown_text = (
+        portable_markdown
+        + """
 
 <figure class="layout-evil">模型输出的裸 HTML</figure>
 """
+    )
     rendered = render_markdown(
         markdown_text,
         images=[

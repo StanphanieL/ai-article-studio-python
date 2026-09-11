@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import inspect
 import math
 import re
@@ -10,11 +11,19 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Protocol
 
 import httpx
 
 from .config import Settings
+from .contracts import ImageProviderClient
+from .domain import (
+    AdapterAuthenticationError,
+    AdapterConfigurationError,
+    AdapterResponseError,
+    AdapterTransportError,
+    WorkflowValidationError,
+    safe_adapter_error_message,
+)
 from .safe_fetch import fetch_trusted_image
 from .schemas import ImagePromptOption, ImageProvider, ImageResultOption, ImageVisualRole
 
@@ -68,12 +77,6 @@ STOCK_QUERY_STOPWORDS = frozenset(
 )
 
 
-class ImageProviderClient(Protocol):
-    """A single, explicit image provider implementation."""
-
-    def generate(self, prompt: ImagePromptOption, index: int, *, task_id: str | None = None) -> ImageResultOption: ...
-
-
 class MissingProvider:
     """Produces a safe error when a real integration lacks credentials."""
 
@@ -81,7 +84,7 @@ class MissingProvider:
         self.name = name
 
     def generate(self, prompt: ImagePromptOption, index: int, *, task_id: str | None = None) -> ImageResultOption:
-        raise RuntimeError(f"{self.name} API key is not configured")
+        raise AdapterConfigurationError(f"{self.name} API key is not configured")
 
 
 def calculate_image_count(content: str) -> int:
@@ -131,10 +134,7 @@ class ImageGenerationService:
         *,
         task_id: str | None = None,
     ) -> list[ImageResultOption]:
-        return [
-            self.generate_one(prompt, provider, index, task_id=task_id)
-            for index, prompt in enumerate(prompts)
-        ]
+        return [self.generate_one(prompt, provider, index, task_id=task_id) for index, prompt in enumerate(prompts)]
 
     def generate_one(
         self,
@@ -152,9 +152,7 @@ class ImageGenerationService:
                 except Exception:
                     continue
             fallback_reason = (
-                "生成式图解暂不可用，已使用中性占位图，避免以无关图库照片替代。"
-                if technical_illustration
-                else "自动图片来源暂不可用，已使用中性占位图。"
+                "生成式图解暂不可用，已使用中性占位图，避免以无关图库照片替代。" if technical_illustration else "自动图片来源暂不可用，已使用中性占位图。"
             )
             if self.fallback_provider is not None:
                 local = self._generate(self.fallback_provider, prompt, index, task_id)
@@ -170,9 +168,12 @@ class ImageGenerationService:
 
     @staticmethod
     def _generate(provider: ImageProviderClient, prompt: ImagePromptOption, index: int, task_id: str | None) -> ImageResultOption:
-        if task_id is None or not _supports_task_id(provider.generate):
-            return provider.generate(prompt, index)
-        return provider.generate(prompt, index, task_id=task_id)
+        try:
+            if task_id is None or not _supports_task_id(provider.generate):
+                return provider.generate(prompt, index)
+            return provider.generate(prompt, index, task_id=task_id)
+        except httpx.HTTPError as error:
+            raise AdapterTransportError(safe_adapter_error_message(error, "图片服务暂不可用，请稍后重试。")) from error
 
 
 class MockImageProvider:
@@ -223,20 +224,33 @@ class PexelsImageProvider:
 
     def generate(self, prompt: ImagePromptOption, index: int, *, task_id: str | None = None) -> ImageResultOption:
         query = _resolve_query(prompt)
-        response = self.client.get(
-            "https://api.pexels.com/v1/search",
-            headers={"Authorization": self.api_key},
-            params={"query": query, "per_page": 10, "orientation": "landscape"},
-        )
-        response.raise_for_status()
-        photos = response.json().get("photos", [])
+        try:
+            response = self.client.get(
+                "https://api.pexels.com/v1/search",
+                headers={"Authorization": self.api_key},
+                params={"query": query, "per_page": 10, "orientation": "landscape"},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise AdapterTransportError("Pexels 图片服务暂不可用，请稍后重试。") from error
+        try:
+            photos = response.json().get("photos", [])
+            if not isinstance(photos, list):
+                raise ValueError("photos must be a list")
+        except (AttributeError, TypeError, ValueError) as error:
+            raise AdapterResponseError("Pexels 返回的图片数据不合法") from error
         photo = next((candidate for candidate in photos if _matches_stock_query(candidate, query)), None)
         if not photo:
-            raise RuntimeError("Pexels returned no photo matching stock query")
-        src = photo.get("src", {})
-        image_url = src.get("landscape") or src.get("large") or src.get("original")
+            raise AdapterResponseError("Pexels returned no photo matching stock query")
+        try:
+            src = photo.get("src", {})
+            image_url = src.get("landscape") or src.get("large") or src.get("original")
+        except AttributeError as error:
+            raise AdapterResponseError("Pexels 返回的图片数据不合法") from error
+        if not isinstance(image_url, str):
+            raise AdapterResponseError("Pexels 返回的图片数据不合法")
         if not image_url:
-            raise RuntimeError("Pexels photo has no usable image URL")
+            raise AdapterResponseError("Pexels photo has no usable image URL")
         return ImageResultOption(
             image_title=prompt.image_title,
             usage_scene=prompt.usage_scene,
@@ -289,9 +303,7 @@ class SiliconFlowImageProvider:
     def generate(self, prompt: ImagePromptOption, index: int, *, task_id: str | None = None) -> ImageResultOption:
         model_name = self.model.casefold()
         if model_name.startswith("qwen/qwen-image-edit"):
-            raise ValueError(
-                "SiliconFlow 图像编辑模型需要提供源图片；当前文章配图仅支持文生图，请改用 Kwai-Kolors/Kolors 或 Qwen/Qwen-Image。"
-            )
+            raise WorkflowValidationError("SiliconFlow 图像编辑模型需要提供源图片；当前文章配图仅支持文生图，请改用 Kwai-Kolors/Kolors 或 Qwen/Qwen-Image。")
         payload = {
             "model": self.model,
             "prompt": _prompt_text(prompt),
@@ -319,16 +331,21 @@ class SiliconFlowImageProvider:
             payload["negative_prompt"] = self.negative_prompt.strip()
         response = self._post_generation(payload)
         if response.status_code == 401:
-            raise RuntimeError(
-                "SiliconFlow 鉴权失败（401）：请检查 AI_ARTICLE_STUDIO_SILICONFLOW_API_KEY。"
-                "百炼 / DashScope 的 Key 不能用于 SiliconFlow 图片接口。"
+            raise AdapterAuthenticationError(
+                "SiliconFlow 鉴权失败（401）：请检查 AI_ARTICLE_STUDIO_SILICONFLOW_API_KEY。百炼 / DashScope 的 Key 不能用于 SiliconFlow 图片接口。"
             )
         if response.status_code == 403:
-            raise RuntimeError("SiliconFlow 无权调用当前图片模型（403）：请检查账号权限、余额和模型可用性。")
-        response.raise_for_status()
-        image_url = _siliconflow_image_url(response.json())
+            raise AdapterAuthenticationError("SiliconFlow 无权调用当前图片模型（403）：请检查账号权限、余额和模型可用性。")
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            raise AdapterTransportError("SiliconFlow 图片服务暂不可用，请稍后重试。") from error
+        try:
+            image_url = _siliconflow_image_url(response.json())
+        except (TypeError, ValueError) as error:
+            raise AdapterResponseError("SiliconFlow 响应中没有可下载的图片地址") from error
         if not image_url:
-            raise RuntimeError("SiliconFlow 响应中没有可下载的图片地址")
+            raise AdapterResponseError("SiliconFlow 响应中没有可下载的图片地址")
         local_url = persist_remote_image(image_url, self.upload_dir, self.client, task_id=task_id)
         return _generated_result(prompt, local_url, "SILICONFLOW")
 
@@ -342,15 +359,18 @@ class SiliconFlowImageProvider:
         """
 
         for attempt in range(2):
-            response = self.client.post(
-                f"{self.base_url}/images/generations",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=payload,
-            )
+            try:
+                response = self.client.post(
+                    f"{self.base_url}/images/generations",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=payload,
+                )
+            except httpx.HTTPError as error:
+                raise AdapterTransportError("SiliconFlow 图片服务暂不可用，请稍后重试。") from error
             if response.status_code not in {429, 503, 504} or attempt == 1:
                 return response
             time.sleep(_retry_after_seconds(response))
-        raise RuntimeError("unreachable")
+        raise AdapterTransportError("SiliconFlow 图片服务暂不可用，请稍后重试。")
 
 
 class GoogleAIImageProvider:
@@ -369,18 +389,27 @@ class GoogleAIImageProvider:
         self.client = client or httpx.Client(timeout=request_timeout_seconds)
 
     def generate(self, prompt: ImagePromptOption, index: int, *, task_id: str | None = None) -> ImageResultOption:
-        response = self.client.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent",
-            headers={"x-goog-api-key": self.api_key},
-            json={"contents": [{"parts": [{"text": _prompt_text(prompt)}]}]},
-        )
-        response.raise_for_status()
-        parts = response.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-        inline = next((part.get("inlineData") for part in parts if part.get("inlineData")), None)
-        if not inline or not inline.get("data"):
-            raise RuntimeError("Google AI response has no inline image")
-        suffix = _extension_for_content_type(inline.get("mimeType", "image/png"))
-        local_url = persist_bytes(base64.b64decode(inline["data"]), self.upload_dir, suffix, task_id=task_id)
+        try:
+            response = self.client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent",
+                headers={"x-goog-api-key": self.api_key},
+                json={"contents": [{"parts": [{"text": _prompt_text(prompt)}]}]},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise AdapterTransportError("Google AI 图片服务暂不可用，请稍后重试。") from error
+        try:
+            parts = response.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            inline = next((part.get("inlineData") for part in parts if part.get("inlineData")), None)
+            if not isinstance(inline, dict) or not isinstance(inline.get("data"), str) or not inline["data"]:
+                raise ValueError("missing inline image data")
+            suffix = _extension_for_content_type(inline.get("mimeType", "image/png"))
+            image_bytes = base64.b64decode(inline["data"], validate=True)
+            if not image_bytes:
+                raise ValueError("empty inline image data")
+        except (AttributeError, IndexError, TypeError, ValueError, binascii.Error) as error:
+            raise AdapterResponseError("Google AI response has no inline image") from error
+        local_url = persist_bytes(image_bytes, self.upload_dir, suffix, task_id=task_id)
         return _generated_result(prompt, local_url, "GOOGLE_AI")
 
 
@@ -397,9 +426,7 @@ def create_image_service(settings: Settings) -> ImageGenerationService:
     return ImageGenerationService(
         {
             ImageProvider.PEXELS: (
-                PexelsImageProvider(pexels_key, timeout_seconds=settings.request_timeout_seconds)
-                if pexels_key
-                else MissingProvider("Pexels")
+                PexelsImageProvider(pexels_key, timeout_seconds=settings.request_timeout_seconds) if pexels_key else MissingProvider("Pexels")
             ),
             ImageProvider.SILICONFLOW: (
                 SiliconFlowImageProvider(
@@ -449,7 +476,7 @@ def persist_remote_image(url: str, upload_dir: Path, client: httpx.Client, *, ta
         except (httpx.TransportError, httpx.HTTPStatusError) as error:
             status = error.response.status_code if isinstance(error, httpx.HTTPStatusError) and error.response else None
             if attempt or status not in {None, 429, 500, 502, 503, 504}:
-                raise
+                raise AdapterTransportError("图片资源下载服务暂不可用，请稍后重试。") from error
             time.sleep(0.2)
     return persist_bytes(image.content, upload_dir, _extension_for_content_type(image.content_type), task_id=task_id)
 
@@ -467,10 +494,10 @@ def _task_upload_location(upload_dir: Path, task_id: str | None) -> tuple[Path, 
     if task_id is None:
         return root, "/uploads/images"
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", task_id):
-        raise ValueError("任务图片目录不合法")
+        raise WorkflowValidationError("任务图片目录不合法")
     target = (root / task_id).resolve()
     if not target.is_relative_to(root):
-        raise ValueError("任务图片目录不合法")
+        raise WorkflowValidationError("任务图片目录不合法")
     return target, f"/uploads/images/{task_id}"
 
 
@@ -515,9 +542,7 @@ def _is_technical_illustration(prompt: ImagePromptOption) -> bool:
         return True
     prompt_text = " ".join((prompt.image_title, prompt.usage_scene, prompt.prompt_zh, prompt.prompt_en)).casefold()
     has_cjk_keyword = any(keyword in prompt_text for keyword in TECHNICAL_ILLUSTRATION_CJK_KEYWORDS)
-    has_english_keyword = any(
-        _matches_english_keyword(prompt_text, keyword) for keyword in TECHNICAL_ILLUSTRATION_ENGLISH_KEYWORDS
-    )
+    has_english_keyword = any(_matches_english_keyword(prompt_text, keyword) for keyword in TECHNICAL_ILLUSTRATION_ENGLISH_KEYWORDS)
     return has_cjk_keyword or has_english_keyword
 
 
@@ -533,21 +558,13 @@ def _matches_stock_query(photo: object, query: str) -> bool:
     query_terms = _meaningful_stock_terms(query)
     if not query_terms:
         return False
-    candidate_text = " ".join(
-        value
-        for key in ("alt", "description")
-        if isinstance((value := photo.get(key)), str)
-    )
+    candidate_text = " ".join(value for key in ("alt", "description") if isinstance((value := photo.get(key)), str))
     required_matches = 2 if len(query_terms) >= 2 else 1
     return len(query_terms & _meaningful_stock_terms(candidate_text)) >= required_matches
 
 
 def _meaningful_stock_terms(value: str) -> set[str]:
-    return {
-        term
-        for term in re.findall(r"[a-z]+(?:-[a-z]+)?", value.casefold())
-        if term not in STOCK_QUERY_STOPWORDS
-    }
+    return {term for term in re.findall(r"[a-z]+(?:-[a-z]+)?", value.casefold()) if term not in STOCK_QUERY_STOPWORDS}
 
 
 def _prompt_text(prompt: ImagePromptOption) -> str:
