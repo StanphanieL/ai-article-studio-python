@@ -139,6 +139,8 @@ def test_image_service_normalizes_http_errors_from_a_contract_implementation() -
     "message",
     [
         "Bearer inline-secret",
+        "API-Key inline-secret",
+        "Authorization: API-Key inline-secret",
         "api_key=inline-secret",
         "https://provider.example.test/?token=inline-secret",
         '{"apiKey":"inline-secret"}',
@@ -163,6 +165,27 @@ def test_pexels_malformed_photo_shape_becomes_an_adapter_response_error() -> Non
             json={"photos": [{"alt": "technology cover", "src": "not-an-object"}]},
             request=request,
         )
+
+    provider = PexelsImageProvider("test-key", httpx.Client(transport=httpx.MockTransport(handler)))
+
+    with pytest.raises(AdapterResponseError, match="Pexels 返回的图片数据不合法"):
+        provider.generate(_prompt(), 0)
+
+
+@pytest.mark.parametrize(
+    "photos",
+    [
+        None,
+        {"alt": "technology cover"},
+        [{"alt": "technology cover", "src": {"landscape": 123}}],
+    ],
+)
+def test_pexels_malformed_collection_or_url_becomes_an_adapter_response_error(photos: object) -> None:
+    from ai_article_studio.domain import AdapterResponseError
+    from ai_article_studio.providers import PexelsImageProvider
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"photos": photos}, request=request)
 
     provider = PexelsImageProvider("test-key", httpx.Client(transport=httpx.MockTransport(handler)))
 

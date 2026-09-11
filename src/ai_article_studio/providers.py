@@ -240,6 +240,8 @@ class PexelsImageProvider:
             raise AdapterTransportError("Pexels 图片服务暂不可用，请稍后重试。") from error
         try:
             photos = response.json().get("photos", [])
+            if not isinstance(photos, list):
+                raise ValueError("photos must be a list")
         except (AttributeError, TypeError, ValueError) as error:
             raise AdapterResponseError("Pexels 返回的图片数据不合法") from error
         photo = next((candidate for candidate in photos if _matches_stock_query(candidate, query)), None)
@@ -250,6 +252,8 @@ class PexelsImageProvider:
             image_url = src.get("landscape") or src.get("large") or src.get("original")
         except AttributeError as error:
             raise AdapterResponseError("Pexels 返回的图片数据不合法") from error
+        if not isinstance(image_url, str):
+            raise AdapterResponseError("Pexels 返回的图片数据不合法")
         if not image_url:
             raise AdapterResponseError("Pexels photo has no usable image URL")
         return ImageResultOption(

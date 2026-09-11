@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 
 _ACTION_PROVIDER_SEPARATOR = "|provider="
-_AUTH_VALUE_PATTERN = re.compile(r"(?i)(\b(?:(?:proxy-)?authorization\s*:\s*)?(?:bearer|basic)\s+)([^\s,;]+)")
+_AUTH_VALUE_PATTERN = re.compile(r"(?i)(\b(?:(?:proxy-)?authorization\s*:\s*)?(?:bearer|basic|api-key)\s+)([^\s,;]+)")
 _QUOTED_SECRET_FIELD_PATTERN = re.compile(
     r"(?i)([\"'](?:api[_-]?key|access[_-]?token|id[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password)[\"']\s*:\s*[\"'])([^\"']*)([\"'])"
 )
