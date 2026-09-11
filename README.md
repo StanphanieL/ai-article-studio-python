@@ -42,6 +42,7 @@ cp .env.example .env
 ```bash
 uv run pytest
 uv run ruff check .
+uv run ruff format --check .
 node --check src/ai_article_studio/static/stream.js
 ```
 

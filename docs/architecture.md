@@ -27,6 +27,13 @@ AI Article Studio borrows K9Forge's engineering discipline, not its terminal pro
 5. Reorganize behind compatibility facades. Public imports and established `ArticleWorkflow` methods remain stable while private collaborators move; do not force callers to follow an internal extraction.
 6. Prefer small, reviewable changes. Run Ruff for source and tests, preserve public endpoint/payload behavior, and add a boundary test whenever a new layer or dependency direction is introduced.
 
+Run the complete formatting gate before delivery:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+```
+
 ### Current boundary phase
 
 The text-agent seam is a Protocol today. Image generation and visual review are
