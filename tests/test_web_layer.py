@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
+from starlette.routing import Mount
 
 from ai_article_studio.config import RuntimeMode, Settings
 from ai_article_studio.web import api, pages
@@ -109,6 +111,19 @@ def test_main_preserves_serialization_imports_and_full_route_inventory() -> None
     assert log_payload is web_log_payload
     assert page_routes == PAGE_ROUTE_INVENTORY
     assert api_routes == API_ROUTE_INVENTORY
+
+
+def test_app_preserves_static_mount_inventory(tmp_path: Path) -> None:
+    """Catch either existing static mount being renamed, removed, or replaced."""
+
+    with build_client(tmp_path) as client:
+        mounts = [route for route in client.app.routes if isinstance(route, Mount)]
+
+    assert {(mount.path, mount.name) for mount in mounts} == {
+        ("/static", "static"),
+        ("/uploads/images", "uploads"),
+    }
+    assert all(isinstance(mount.app, StaticFiles) for mount in mounts)
 
 
 def test_web_static_export_and_sse_contracts(tmp_path: Path) -> None:
