@@ -19,7 +19,13 @@ from .providers import create_image_service
 from .schemas import BaseResponse
 from .vision import VisionReviewer
 from .web import api, pages
-from .web.presentation import _image_anchor_options, _image_choices, resolve_page_navigation  # noqa: F401
+from .web.presentation import (  # noqa: F401
+    _image_anchor_options,
+    _image_choices,
+    article_payload,
+    log_payload,
+    resolve_page_navigation,
+)
 from .workflow import ArticleWorkflow, WorkflowBusyError, _safe_error_message
 
 
