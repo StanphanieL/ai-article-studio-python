@@ -234,3 +234,27 @@ def test_llm_unrepairable_json_becomes_a_response_error_with_legacy_validation_s
 
     assert isinstance(error.value, ValueError)
     assert calls == 2
+
+
+def test_adapter_response_validation_error_keeps_the_legacy_api_400_mapping(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from ai_article_studio.config import RuntimeMode
+    from ai_article_studio.domain import AdapterResponseValidationError
+    from ai_article_studio.main import create_app
+
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'articles.db'}",
+        upload_dir=tmp_path / "images",
+        settings=Settings(app_mode=RuntimeMode.MOCK, _env_file=None),
+    )
+
+    @app.get("/__test/adapter-response-validation")
+    def adapter_response_validation_endpoint() -> None:
+        raise AdapterResponseValidationError("LLM response contains no JSON value")
+
+    with TestClient(app) as client:
+        response = client.get("/__test/adapter-response-validation")
+
+    assert response.status_code == 400
+    assert response.json() == {"code": 400, "message": "LLM response contains no JSON value", "data": None}

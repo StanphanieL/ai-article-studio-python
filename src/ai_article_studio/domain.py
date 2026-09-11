@@ -63,7 +63,7 @@ class AdapterResponseError(AdapterError):
     """A provider returned a successful but unusable response payload."""
 
 
-class AdapterResponseValidationError(AdapterResponseError, WorkflowValidationError):
+class AdapterResponseValidationError(WorkflowValidationError, AdapterResponseError):
     """An invalid provider response that keeps the legacy validation mapping."""
 
 
