@@ -14,6 +14,7 @@ from ai_article_studio.web.presentation import log_payload as web_log_payload
 PAGE_ROUTE_INVENTORY = {
     ("GET", "/"),
     ("GET", "/article/list"),
+    ("GET", "/article/jobs/statuses"),
     ("POST", "/article/{task_id}/delete"),
     ("POST", "/article/create"),
     ("GET", "/article/detail/{task_id}"),

@@ -25,6 +25,7 @@ from ..schemas import (
     ImageVisualRole,
     OutlineItem,
     QualityReviewResult,
+    TaskListStatus,
     WorkflowJobStatus,
     WorkflowRunMode,
 )
@@ -208,7 +209,11 @@ _ACTION_PAGE_STEPS = {
 
 def resolve_page_navigation(article, next_action: str | None, requested_step: str | None) -> dict[str, object]:
     action = next_action or ""
-    if getattr(article, "status", None) == "FAILED" and action in _ACTION_PAGE_STEPS:
+    if action == "GENERATE_OUTLINE" and getattr(article, "selected_title", None) and not getattr(article, "outline", None):
+        # Confirming a title is not a navigation command. Let the author decide
+        # when to launch outline generation from the title step.
+        default_step = "title"
+    elif getattr(article, "status", None) == "FAILED" and action in _ACTION_PAGE_STEPS:
         default_step = _ACTION_PAGE_STEPS[action]
     elif action == "COMPOSE_ARTICLE" and article.final_markdown:
         default_step = "delivery"
@@ -290,7 +295,7 @@ def page_context(article, settings: Settings, requested_step: str | None = None)
         "config": config,
         "image_choices": image_choices(settings),
         "title_options": load_json(article.title_options, []),
-        "outline_text": json.dumps(outline_items, ensure_ascii=False, indent=2),
+        "outline_markdown": outline_preview_markdown(outline_items),
         "outline_html": render_markdown(outline_preview_markdown(outline_items)),
         "image_prompts": image_prompts,
         "image_results": image_results,
@@ -366,7 +371,23 @@ def task_card_context(article) -> dict[str, object]:
         "is_queued": article.status == "QUEUED",
         "is_running": article.status == "RUNNING",
         "is_cancelling": article.status == "CANCELLING",
+        "progress": article.supervisor_reason if article.status in {"QUEUED", "RUNNING", "CANCELLING"} else None,
     }
+
+
+def task_list_status(article, job: WorkflowJobStatus) -> TaskListStatus:
+    """Derive display-safe live text from persisted task state."""
+
+    card = task_card_context(article)
+    progress = job.message.strip() if job.status in {"QUEUED", "RUNNING", "CANCELLING"} and job.message else None
+    return TaskListStatus(
+        task_id=article.task_id,
+        state=str(card["state"]),
+        label=str(card["label"]),
+        icon=str(card["icon"]),
+        tone=str(card["tone"]),
+        progress=progress,
+    )
 
 
 def parse_review_result(raw: str | None) -> QualityReviewResult | None:
@@ -432,6 +453,47 @@ def outline_preview_markdown(items: object) -> str:
             continue
         parts.append(f"## {outline.heading}\n\n{outline.description}")
     return "\n\n".join(parts)
+
+
+def parse_outline_markdown(markdown: str) -> list[OutlineItem]:
+    """Turn the outline editor's small Markdown dialect into workflow data."""
+
+    if not markdown.strip():
+        raise ValueError("大纲不能为空；请使用“## 小节标题”并在下方写说明")
+
+    outline: list[OutlineItem] = []
+    heading: str | None = None
+    description_lines: list[str] = []
+
+    def append_section() -> None:
+        nonlocal description_lines
+        if heading is None:
+            return
+        description = "\n".join(description_lines).strip()
+        if not description:
+            raise ValueError(f"“{heading}”缺少说明，请在标题下补充内容")
+        outline.append(OutlineItem(heading=heading, description=description))
+        description_lines = []
+
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            append_section()
+            heading = stripped[3:].strip()
+            if not heading:
+                raise ValueError("二级标题不能为空")
+        elif stripped.startswith("#"):
+            raise ValueError("大纲只支持二级标题；请使用“## 小节标题”")
+        elif heading is None:
+            if stripped:
+                raise ValueError("请先使用“## 小节标题”开始大纲")
+        else:
+            description_lines.append(line)
+
+    append_section()
+    if not outline:
+        raise ValueError("至少需要一个“## 小节标题”")
+    return outline
 
 
 def workflow_hint(article, title_options: list[dict], review: QualityReviewResult | None) -> str:

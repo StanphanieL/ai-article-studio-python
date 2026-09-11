@@ -34,6 +34,17 @@ class WorkflowJobStatus(ApiModel):
     elapsed_seconds: int | None = None
 
 
+class TaskListStatus(ApiModel):
+    """Compact, page-only payload for live task-list updates."""
+
+    task_id: str
+    state: str
+    label: str
+    icon: str
+    tone: str
+    progress: str | None = None
+
+
 class ImageProvider(StrEnum):
     AUTO = "AUTO"
     PEXELS = "PEXELS"

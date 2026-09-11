@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from ai_article_studio.config import RuntimeMode, Settings
+from ai_article_studio.web.presentation import outline_preview_markdown
 
 
 def build_client(tmp_path: Path) -> TestClient:
@@ -34,7 +35,7 @@ def test_page_saves_redirect_to_the_next_wizard_step(tmp_path: Path) -> None:
         outline = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]["outline"]
         outline_response = client.post(
             f"/article/{task_id}/outline",
-            data={"outline_json": outline},
+            data={"outline_markdown": outline_preview_markdown(json.loads(outline))},
             follow_redirects=False,
         )
         content_response = client.post(
@@ -43,7 +44,7 @@ def test_page_saves_redirect_to_the_next_wizard_step(tmp_path: Path) -> None:
             follow_redirects=False,
         )
 
-    assert title_response.headers["location"] == f"/article/detail/{task_id}?step=outline#outline-stage"
+    assert title_response.headers["location"] == f"/article/detail/{task_id}?step=title#title-stage"
     assert outline_response.headers["location"] == f"/article/detail/{task_id}?step=content#content-stage"
     assert content_response.headers["location"] == f"/article/detail/{task_id}?step=images#images-stage"
 
@@ -118,8 +119,8 @@ def test_wizard_navigation_uses_stage_anchors_and_reserves_space_for_the_sticky_
 def test_wizard_assets_have_new_cache_versions() -> None:
     base = (Path(__file__).parents[1] / "src/ai_article_studio/templates/base.html").read_text(encoding="utf-8")
 
-    assert "/static/app.css?v=20260724-homepage-displaytype1" in base
-    assert "/static/stream.js?v=20260724-image-recovery1" in base
+    assert "/static/app.css?v=20260911-task-flow1" in base
+    assert "/static/stream.js?v=20260911-task-flow1" in base
 
 
 def test_reconfirming_a_completed_title_stays_on_the_delivery_card(tmp_path: Path) -> None:

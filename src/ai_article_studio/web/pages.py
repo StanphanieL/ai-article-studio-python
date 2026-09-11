@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from typing import Annotated
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from ..schemas import BaseResponse, ImagePlanReorderRequest, ImagePlanUpdateRequest, ImageProvider, OutlineItem, WorkflowJobStatus
+from ..schemas import BaseResponse, ImagePlanReorderRequest, ImagePlanUpdateRequest, ImageProvider, TaskListStatus, WorkflowJobStatus
 from ..workflow import ArticleWorkflow
 from .dependencies import JobRunnerDep, SettingsDep, TemplatesDep, WorkflowDep
 from .presentation import (
@@ -19,9 +18,11 @@ from .presentation import (
     page_json_or_form_payload,
     page_model_config,
     page_reorder_payload,
+    parse_outline_markdown,
     resolve_page_navigation,
     start_job_response,
     task_card_context,
+    task_list_status,
     validate_page_model,
 )
 
@@ -58,6 +59,14 @@ def article_list_page(request: Request, workflow: WorkflowDep, settings: Setting
             "image_choices": image_choices(settings),
         },
     )
+
+
+@router.get("/article/jobs/statuses", include_in_schema=False)
+def task_list_job_statuses(workflow: WorkflowDep, runner: JobRunnerDep) -> BaseResponse[list[TaskListStatus]]:
+    """Update task-card progress without reloading the creation page."""
+
+    _, articles = workflow.list(page_size=50)
+    return BaseResponse(data=[task_list_status(article, runner.status(article.task_id)) for article in articles])
 
 
 @router.post("/article/{task_id}/delete", include_in_schema=False)
@@ -99,9 +108,13 @@ def create_article_page(
     if mode == "one_click":
         runner.one_click(task_id)
     detail_url = f"/article/detail/{task_id}"
+    list_url = "/article/list"
     if "application/json" in request.headers.get("accept", ""):
-        return JSONResponse(status_code=201, content=BaseResponse(data={"taskId": task_id, "detailUrl": detail_url}).model_dump(by_alias=True))
-    return RedirectResponse(detail_url, status_code=303)
+        return JSONResponse(
+            status_code=201,
+            content=BaseResponse(data={"taskId": task_id, "detailUrl": detail_url, "listUrl": list_url}).model_dump(by_alias=True),
+        )
+    return RedirectResponse(list_url if mode == "one_click" else detail_url, status_code=303)
 
 
 @router.get("/article/detail/{task_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -142,18 +155,21 @@ def review_revision_page(task_id: str, runner: JobRunnerDep) -> RedirectResponse
 
 @router.post("/article/{task_id}/title", include_in_schema=False)
 def save_title_page(task_id: str, selected_title: Annotated[str, Form()], workflow: WorkflowDep) -> RedirectResponse:
+    before = workflow.get(task_id)
     article = workflow.confirm_title(task_id, selected_title)
-    return RedirectResponse(
-        detail_step_url(task_id, resolve_page_navigation(article, workflow.next_decision(task_id).action.value, None)["default_step"]), status_code=303
-    )
+    # A same-title confirmation on an already finished article should not pull
+    # the reader away from the delivery view. New or changed titles stay here
+    # so the author can intentionally start the next workflow action.
+    if before.selected_title == selected_title and article.final_markdown:
+        action = workflow.next_decision(task_id).action.value
+        step = resolve_page_navigation(article, action, None)["default_step"]
+        return RedirectResponse(detail_step_url(task_id, str(step)), status_code=303)
+    return RedirectResponse(detail_step_url(task_id, "title"), status_code=303)
 
 
 @router.post("/article/{task_id}/outline", include_in_schema=False)
-def save_outline_page(task_id: str, outline_json: Annotated[str, Form()], workflow: WorkflowDep) -> RedirectResponse:
-    try:
-        outline = [OutlineItem.model_validate(item) for item in json.loads(outline_json)]
-    except (TypeError, json.JSONDecodeError, ValueError) as error:
-        raise ValueError("大纲必须是有效的 JSON 数组") from error
+def save_outline_page(task_id: str, outline_markdown: Annotated[str, Form()], workflow: WorkflowDep) -> RedirectResponse:
+    outline = parse_outline_markdown(outline_markdown)
     workflow.save_outline(task_id, outline)
     return RedirectResponse(detail_step_url(task_id, "content"), status_code=303)
 

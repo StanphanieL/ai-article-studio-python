@@ -27,7 +27,7 @@ def article(**overrides: object) -> SimpleNamespace:
     ("state", "next_action", "expected_default"),
     [
         (article(), "GENERATE_TITLES", "title"),
-        (article(selected_title="标题"), "GENERATE_OUTLINE", "outline"),
+        (article(selected_title="标题"), "GENERATE_OUTLINE", "title"),
         (article(selected_title="标题", outline="[]"), "GENERATE_CONTENT", "content"),
         (
             article(selected_title="标题", outline="[]", content="# 正文"),

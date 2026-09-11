@@ -11,6 +11,7 @@ from sqlalchemy import select
 from ai_article_studio.config import RuntimeMode, Settings
 from ai_article_studio.models import AgentLog, Article
 from ai_article_studio.schemas import ImageProvider
+from ai_article_studio.web.presentation import outline_preview_markdown
 
 
 def build_client(tmp_path: Path) -> TestClient:
@@ -23,6 +24,10 @@ def build_client(tmp_path: Path) -> TestClient:
             settings=Settings(app_mode=RuntimeMode.MOCK),
         )
     )
+
+
+def outline_markdown(serialized_outline: str) -> str:
+    return outline_preview_markdown(json.loads(serialized_outline))
 
 
 def test_task_list_detail_and_static_image_smoke(tmp_path: Path) -> None:
@@ -84,7 +89,7 @@ def test_content_generation_cta_uses_sse_by_default_without_a_duplicate_stream_b
         selected_title = json.loads(titled["titleOptions"])[0]["title"]
         client.post("/api/article/confirm-title", json={"taskId": task_id, "selectedTitle": selected_title})
         outlined = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]
-        client.post(f"/article/{task_id}/outline", data={"outline_json": outlined["outline"]})
+        client.post(f"/article/{task_id}/outline", data={"outline_markdown": outline_markdown(outlined["outline"])})
         page = client.get(f"/article/detail/{task_id}")
 
     assert 'data-stream-url="/api/article/real-stream-generate-content/' + task_id + '"' in page.text
@@ -275,12 +280,13 @@ def test_page_creation_persists_selected_settings_for_step_and_one_click_modes(t
         stepped = client.post("/article/create", data={**settings_form, "mode": "step"}, follow_redirects=False)
         task_id = stepped.headers["location"].rsplit("/", 1)[-1]
         task = client.get(f"/api/article/{task_id}").json()["data"]
-        one_click = client.post(
+        client.post(
             "/article/create",
             data={**settings_form, "topic": "首页一键配置", "mode": "one_click"},
             follow_redirects=False,
         )
-        one_click_id = one_click.headers["location"].rsplit("/", 1)[-1]
+        _, articles = client.app.state.workflow.list()
+        one_click_id = next(article.task_id for article in articles if article.topic == "首页一键配置")
         one_click_task = client.get(f"/api/article/{one_click_id}").json()["data"]
 
     persisted = json.loads(task["modelConfig"])
@@ -507,7 +513,7 @@ def test_title_choice_has_immediate_feedback_and_outline_save_becomes_dirty_only
         outline_page = client.get(f"/article/detail/{task_id}")
         saved = client.post(
             f"/article/{task_id}/outline",
-            data={"outline_json": outlined["outline"]},
+            data={"outline_markdown": outline_markdown(outlined["outline"])},
             follow_redirects=False,
         )
         after_save = client.get(saved.headers["location"])
@@ -573,7 +579,8 @@ def test_one_click_page_creation_starts_a_server_side_background_job(tmp_path: P
         )
         task_url = created.headers["location"]
         page = client.get(task_url)
-        task_id = task_url.rsplit("/", 1)[-1]
+        _, articles = client.app.state.workflow.list()
+        task_id = next(article.task_id for article in articles if article.topic == "异步一键生成")
         task = client.get(f"/api/article/{task_id}").json()["data"]
 
     assert created.status_code == 303
@@ -596,6 +603,94 @@ def test_one_click_page_creation_returns_a_small_json_handoff_for_the_browser(tm
     assert response.status_code == 201
     assert response.json()["data"]["taskId"]
     assert response.json()["data"]["detailUrl"].startswith("/article/detail/")
+
+
+def test_homepage_one_click_stays_on_task_list_and_exposes_a_list_handoff(tmp_path: Path) -> None:
+    """One-click creation is observable from the list instead of forcing a workspace jump."""
+
+    with build_client(tmp_path) as client:
+        created = client.post(
+            "/article/create",
+            data={"topic": "留在列表的一键任务", "mode": "one_click"},
+            follow_redirects=False,
+        )
+        handoff = client.post(
+            "/article/create",
+            data={"topic": "JSON 列表交接", "mode": "one_click"},
+            headers={"accept": "application/json"},
+        )
+
+    assert created.status_code == 303
+    assert created.headers["location"] == "/article/list"
+    assert handoff.status_code == 201
+    assert handoff.json()["data"]["listUrl"] == "/article/list"
+    assert handoff.json()["data"]["detailUrl"].startswith("/article/detail/")
+
+
+def test_task_list_status_endpoint_exposes_live_stage_copy(tmp_path: Path) -> None:
+    with build_client(tmp_path) as client:
+        task_id = client.post("/api/article/create", json={"topic": "列表实时阶段"}).json()["data"]
+        client.app.state.workflow.begin_job(task_id, "GENERATE_OUTLINE", "正在生成大纲")
+        client.app.state.workflow.mark_job_running(task_id)
+        response = client.get("/article/jobs/statuses")
+
+    assert response.status_code == 200
+    item = next(item for item in response.json()["data"] if item["taskId"] == task_id)
+    assert item["state"] == "running"
+    assert item["label"] == "进行中"
+    assert item["progress"] == "正在生成大纲"
+
+
+def test_title_selection_requires_explicit_confirmation_before_navigating(tmp_path: Path) -> None:
+    with build_client(tmp_path) as client:
+        task_id = client.post("/api/article/create", json={"topic": "标题确认"}).json()["data"]
+        titles = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]
+        selected_title = json.loads(titles["titleOptions"])[0]["title"]
+        title_page = client.get(f"/article/detail/{task_id}?step=title")
+        confirmed = client.post(
+            f"/article/{task_id}/title",
+            data={"selected_title": selected_title},
+            follow_redirects=False,
+        )
+        after_confirm = client.get(confirmed.headers["location"])
+
+    assert 'type="radio" name="selected_title"' in title_page.text
+    assert "确认所选标题" in title_page.text
+    assert confirmed.headers["location"].endswith("?step=title#title-stage")
+    assert "生成大纲" in after_confirm.text
+
+
+def test_outline_page_edits_markdown_instead_of_serialized_json(tmp_path: Path) -> None:
+    with build_client(tmp_path) as client:
+        task_id = client.post("/api/article/create", json={"topic": "Markdown 大纲"}).json()["data"]
+        titles = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]
+        selected_title = json.loads(titles["titleOptions"])[0]["title"]
+        client.post("/api/article/confirm-title", json={"taskId": task_id, "selectedTitle": selected_title})
+        client.post(f"/api/article/continue-workflow/{task_id}")
+        page = client.get(f"/article/detail/{task_id}?step=outline", follow_redirects=False)
+        saved = client.post(
+            f"/article/{task_id}/outline",
+            data={"outline_markdown": "## 问题定义\n\n说明问题的边界。\n\n## 实践建议\n\n给出可执行建议。"},
+            follow_redirects=False,
+        )
+        stored = client.get(f"/api/article/{task_id}").json()["data"]
+
+    assert 'name="outline_markdown"' in page.text
+    assert 'name="outline_json"' not in page.text
+    assert "编辑 Markdown" in page.text
+    assert saved.status_code == 303
+    assert json.loads(stored["outline"]) == [
+        {"heading": "问题定义", "description": "说明问题的边界。"},
+        {"heading": "实践建议", "description": "给出可执行建议。"},
+    ]
+
+
+def test_markdown_editors_explain_the_format_without_exposing_outline_json(tmp_path: Path) -> None:
+    template = (Path(__file__).parents[1] / "src/ai_article_studio/templates/detail.html").read_text(encoding="utf-8")
+
+    assert "使用 Markdown 格式编辑" in template
+    assert "编辑 Markdown" in template
+    assert "outline_json" not in template
 
 
 def test_title_page_endpoint_returns_a_real_422_for_an_empty_title(tmp_path: Path) -> None:
@@ -693,9 +788,10 @@ def test_empty_step_hints_describe_the_available_action_without_layout_jargon(tm
             phase="TITLE_SELECTION",
             status="SUCCESS",
         )
-        page = client.get(f"/article/detail/{task_id}?step=outline")
+        page = client.get(f"/article/detail/{task_id}?step=outline", follow_redirects=False)
 
-    assert "点击“生成大纲”，确认后即可进入正文。" in page.text
+    assert page.status_code == 303
+    assert page.headers["location"].endswith("?step=title#title-stage")
     assert "操作区" not in page.text
     assert "使用上方“生成大纲”" not in page.text
 
@@ -786,7 +882,7 @@ def test_content_uses_safe_markdown_preview_and_edit_tabs(tmp_path: Path) -> Non
 
     assert "data-content-preview" in page.text
     assert 'data-markdown-tabs="content"' in page.text
-    assert "编辑正文" in page.text
+    assert "编辑 Markdown" in page.text
     assert "文章预览" in page.text
 
 
@@ -853,7 +949,7 @@ def test_outline_and_content_expose_accessible_preview_and_edit_tabs(tmp_path: P
         client.post("/api/article/confirm-title", json={"taskId": task_id, "selectedTitle": selected_title})
         outline = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]["outline"]
         outline_page = client.get(f"/article/detail/{task_id}?step=outline")
-        client.post(f"/article/{task_id}/outline", data={"outline_json": outline})
+        client.post(f"/article/{task_id}/outline", data={"outline_markdown": outline_markdown(outline)})
         client.post(f"/api/article/continue-workflow/{task_id}")
         content_page = client.get(f"/article/detail/{task_id}?step=content")
 
@@ -879,14 +975,14 @@ def test_outline_preview_offers_direct_confirmation_and_content_uses_neutral_sta
         outline_page = client.get(f"/article/detail/{task_id}?step=outline")
         confirmed = client.post(
             f"/article/{task_id}/outline",
-            data={"outline_json": outline},
+            data={"outline_markdown": outline_markdown(outline)},
             follow_redirects=False,
         )
         content_page = client.get(confirmed.headers["location"])
 
     assert "data-outline-confirm-form" in outline_page.text
     assert "确认大纲并进入正文" in outline_page.text
-    assert 'name="outline_json"' in outline_page.text
+    assert 'name="outline_markdown"' in outline_page.text
     assert confirmed.status_code == 303
     assert confirmed.headers["location"].endswith("?step=content#content-stage")
     assert "开始流式生成正文" not in content_page.text

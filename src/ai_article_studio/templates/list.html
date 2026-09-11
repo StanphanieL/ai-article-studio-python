@@ -58,20 +58,21 @@
   </section>
 
   {% if articles %}
-  <section class="task-grid home-task-grid" aria-label="文章列表">
+  <section class="task-grid home-task-grid" aria-label="文章列表" data-task-list data-task-status-url="/article/jobs/statuses">
     {% for task in task_cards %}
     {% set article = task.article %}
     <article class="task-card home-task-card" data-task-card data-task-id="{{ article.task_id }}" data-task-state="{{ task.state }}">
       <a class="task-card-link" href="/article/detail/{{ article.task_id }}" aria-label="打开任务：{{ article.selected_title or article.topic }}">
         <div class="task-card-header">
-          <p class="task-status {{ task.tone }}" aria-label="任务状态：{{ task.label }}">
-            <span class="task-status-icon{% if task.state in ['queued', 'running'] %} spinner{% endif %}" aria-hidden="true">{{ task.icon }}</span>
-            <span>{{ task.label }}</span>
+          <p class="task-status {{ task.tone }}" aria-label="任务状态：{{ task.label }}" data-task-status>
+            <span class="task-status-icon{% if task.state in ['queued', 'running'] %} spinner{% endif %}" aria-hidden="true" data-task-status-icon>{{ task.icon }}</span>
+            <span data-task-status-label>{{ task.label }}</span>
           </p>
           <span class="task-card-open" aria-hidden="true">↗</span>
         </div>
         <h3>{{ article.selected_title or article.topic }}</h3>
         <p class="task-card-topic"><span>选题</span>{{ article.topic }}</p>
+        <p class="task-card-progress" data-task-progress {% if not task.progress %}hidden{% endif %}>{{ task.progress or '' }}</p>
         <footer><span>最后更新</span><time>{{ article.update_time.strftime('%Y-%m-%d %H:%M') }}</time></footer>
       </a>
       <div class="task-card-actions">

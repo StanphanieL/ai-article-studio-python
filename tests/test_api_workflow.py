@@ -9,6 +9,7 @@ from ai_article_studio.config import RuntimeMode, Settings
 from ai_article_studio.llm import MockArticleAgent
 from ai_article_studio.schemas import ImagePlacement, ImagePromptOption, ImageProvider, ImageVisualRole, QualityReviewResult
 from ai_article_studio.supervisor import SupervisorAction
+from ai_article_studio.web.presentation import outline_preview_markdown
 
 
 def build_client(tmp_path: Path) -> TestClient:
@@ -236,7 +237,10 @@ def test_image_plan_layout_edit_before_generation_keeps_image_generation_as_next
         selected_title = json.loads(titled["titleOptions"])[0]["title"]
         client.post("/api/article/confirm-title", json={"taskId": task_id, "selectedTitle": selected_title})
         outlined = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]
-        client.post(f"/article/{task_id}/outline", data={"outline_json": outlined["outline"]})
+        client.post(
+            f"/article/{task_id}/outline",
+            data={"outline_markdown": outline_preview_markdown(json.loads(outlined["outline"]))},
+        )
         client.post(f"/api/article/continue-workflow/{task_id}")
         planned = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]
         prompt = json.loads(planned["imagePrompts"])[1]

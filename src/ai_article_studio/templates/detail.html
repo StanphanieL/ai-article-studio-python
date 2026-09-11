@@ -83,7 +83,10 @@
       </form>
     </details>
     {% elif title_options %}
-    <div class="choice-list">{% for item in title_options %}<form method="post" action="/article/{{ article.task_id }}/title" data-title-confirm-form><input type="hidden" name="selected_title" value="{{ item.title }}"><button class="choice" type="submit"><strong>{{ item.title }}</strong><span>{{ item.reason }}</span></button></form>{% endfor %}</div>
+    <form class="title-selection-form" method="post" action="/article/{{ article.task_id }}/title" data-title-confirm-form>
+      <fieldset class="choice-list"><legend>选择一个标题</legend>{% for item in title_options %}<label class="choice title-choice"><input type="radio" name="selected_title" value="{{ item.title }}" required><span class="choice-copy"><strong>{{ item.title }}</strong><span>{{ item.reason }}</span></span></label>{% endfor %}</fieldset>
+      <div class="editor-actions"><button class="button primary" type="submit">确认所选标题</button><span class="muted">确认后，你可以决定何时开始生成大纲。</span></div>
+    </form>
     <form class="inline-form" method="post" action="/article/{{ article.task_id }}/title" data-title-confirm-form><input name="selected_title" placeholder="或者输入自定义标题" required><button class="button secondary" type="submit">确认自定义标题</button></form>
     <aside class="workflow-utilities title-one-click">
       <strong>直接生成整篇文章</strong>
@@ -103,22 +106,23 @@
     <div class="markdown-tabs" data-markdown-tabs="outline">
       <div class="markdown-tablist" role="tablist" aria-label="大纲查看方式">
         <button id="outline-preview-tab" type="button" role="tab" aria-selected="true" aria-controls="outline-preview-panel" data-markdown-tab="preview">预览</button>
-        <button id="outline-edit-tab" type="button" role="tab" aria-selected="false" aria-controls="outline-edit-panel" data-markdown-tab="edit" tabindex="-1">编辑大纲</button>
+        <button id="outline-edit-tab" type="button" role="tab" aria-selected="false" aria-controls="outline-edit-panel" data-markdown-tab="edit" tabindex="-1">编辑 Markdown</button>
       </div>
       <section id="outline-preview-panel" role="tabpanel" aria-labelledby="outline-preview-tab" data-markdown-panel="preview">
         <div class="article-preview outline-preview" data-outline-preview aria-label="大纲预览">{{ outline_html | safe }}</div>
         {% if outline_editable | default(false) %}
         <form class="editor-actions" method="post" action="/article/{{ article.task_id }}/outline" data-pending-form data-outline-confirm-form>
-          <input type="hidden" name="outline_json" value="{{ outline_text }}">
+          <input type="hidden" name="outline_markdown" value="{{ outline_markdown }}">
           <button class="button primary" type="submit">确认大纲并进入正文</button>
-          <span class="muted">需要调整时，可切换到“编辑大纲”。</span>
+          <span class="muted">需要调整时，可切换到“编辑 Markdown”。</span>
         </form>
         {% endif %}
       </section>
       <section id="outline-edit-panel" role="tabpanel" aria-labelledby="outline-edit-tab" data-markdown-panel="edit" hidden>
         <form method="post" action="/article/{{ article.task_id }}/outline" data-pending-form data-outline-form>
-          <label class="visually-hidden" for="outline-editor">编辑大纲</label>
-          <textarea id="outline-editor" class="editor compact" name="outline_json" rows="10" required data-outline-editor data-outline-confirmation="{% if outline_editable | default(false) %}required{% else %}saved{% endif %}">{{ outline_text }}</textarea>
+          <label class="visually-hidden" for="outline-editor">编辑 Markdown 大纲</label>
+          <p class="editor-hint">使用 Markdown 格式编辑：每个小节以 <code>## 标题</code> 开始，并在下方补充说明。</p>
+          <textarea id="outline-editor" class="editor compact" name="outline_markdown" rows="10" required data-outline-editor data-outline-confirmation="{% if outline_editable | default(false) %}required{% else %}saved{% endif %}">{{ outline_markdown }}</textarea>
           <div class="editor-actions"><button class="button secondary" type="submit" data-outline-save {% if not (outline_editable | default(false)) %}hidden disabled{% endif %}>{% if outline_editable | default(false) %}确认并保存大纲{% else %}保存大纲修改{% endif %}</button><span class="muted" data-outline-status>{% if outline_editable | default(false) %}确认后进入正文生成。{% else %}大纲已保存；修改内容后才需要再次保存。{% endif %}</span></div>
         </form>
       </section>
@@ -136,17 +140,17 @@
     <div class="markdown-tabs" data-markdown-tabs="content">
       <div class="markdown-tablist" role="tablist" aria-label="正文查看方式">
         <button id="content-preview-tab" type="button" role="tab" aria-selected="true" aria-controls="content-preview-panel" data-markdown-tab="preview">预览</button>
-        <button id="content-edit-tab" type="button" role="tab" aria-selected="false" aria-controls="content-edit-panel" data-markdown-tab="edit" tabindex="-1">编辑正文</button>
+        <button id="content-edit-tab" type="button" role="tab" aria-selected="false" aria-controls="content-edit-panel" data-markdown-tab="edit" tabindex="-1">编辑 Markdown</button>
       </div>
       <section id="content-preview-panel" role="tabpanel" aria-labelledby="content-preview-tab" data-markdown-panel="preview">
         <section class="article-preview" data-content-preview aria-label="文章预览">{{ content_html | safe }}</section>
       </section>
       <section id="content-edit-panel" role="tabpanel" aria-labelledby="content-edit-tab" data-markdown-panel="edit" hidden>
-        <form method="post" action="/article/{{ article.task_id }}/content" data-pending-form data-content-form {% if article.image_results or article.final_markdown %}data-confirm="保存正文会清空配图、图文稿和评审结果。确定继续吗？"{% endif %}><label class="visually-hidden" for="content-editor">编辑正文</label><textarea id="content-editor" class="editor" name="content" rows="18" required>{{ article.content }}</textarea><button class="button secondary" type="submit">保存正文修改</button></form>
+        <form method="post" action="/article/{{ article.task_id }}/content" data-pending-form data-content-form {% if article.image_results or article.final_markdown %}data-confirm="保存正文会清空配图、图文稿和评审结果。确定继续吗？"{% endif %}><label class="visually-hidden" for="content-editor">编辑 Markdown 正文</label><p class="editor-hint">使用 Markdown 格式编辑；保存后会重新渲染预览。</p><textarea id="content-editor" class="editor" name="content" rows="18" required>{{ article.content }}</textarea><button class="button secondary" type="submit">保存正文修改</button></form>
       </section>
     </div>
     {% else %}
-    <form method="post" action="/article/{{ article.task_id }}/content" data-pending-form data-content-form><textarea id="content-editor" class="editor" name="content" rows="18" required></textarea><button class="button secondary" type="submit">保存正文修改</button></form>
+    <form method="post" action="/article/{{ article.task_id }}/content" data-pending-form data-content-form><label class="visually-hidden" for="content-editor">编辑 Markdown 正文</label><p class="editor-hint">使用 Markdown 格式编辑；保存后会重新渲染预览。</p><textarea id="content-editor" class="editor" name="content" rows="18" required></textarea><button class="button secondary" type="submit">保存正文修改</button></form>
     {% endif %}
   </article>
 

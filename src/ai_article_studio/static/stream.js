@@ -390,10 +390,8 @@
           setDisabled(controls, true);
         try {
           formData.set("mode", "one_click");
-          // Ask for a tiny JSON hand-off instead of downloading the complete
-          // detail document through fetch and then navigating a second time.
-          // This removes the visible disabled-form pause before one-click
-          // progress can begin.
+          // One-click work continues in the background. Return to the list so
+          // the author can see its stage without being forced into a card.
           const response = await window.fetch(form.action, {
             method: "POST",
             body: formData,
@@ -401,9 +399,9 @@
           });
           const payload = await parsePayload(response);
           if (!response.ok) throw new Error(responseMessage(payload, `创建任务失败（${response.status}）。`));
-          const detailUrl = payload?.data?.detailUrl;
-          if (!detailUrl) throw new Error("任务已创建，但未收到工作台地址。请在任务列表中继续。");
-          window.location.assign(detailUrl);
+          const listUrl = payload?.data?.listUrl;
+          if (!listUrl) throw new Error("任务已创建，但未收到任务列表地址。请刷新后继续。");
+          window.location.assign(listUrl);
         } catch (requestError) {
           setText(error, requestError.message || "创建任务失败，请重试。", false);
           setDisabled(controls, false);
@@ -438,6 +436,42 @@
         }
       });
     });
+
+    const taskList = root.querySelector("[data-task-list]");
+    if (taskList?.dataset.taskStatusUrl) {
+      const updateTaskCard = (task) => {
+        const card = taskList.querySelector(`[data-task-id="${task.taskId}"]`);
+        if (!card) return;
+        card.dataset.taskState = task.state;
+        const status = card.querySelector("[data-task-status]");
+        if (status) {
+          status.className = `task-status ${task.tone}`;
+          status.setAttribute("aria-label", `任务状态：${task.label}`);
+        }
+        const icon = card.querySelector("[data-task-status-icon]");
+        if (icon) {
+          icon.textContent = task.icon;
+          icon.className = `task-status-icon${["queued", "running"].includes(task.state) ? " spinner" : ""}`;
+        }
+        setText(card.querySelector("[data-task-status-label]"), task.label, false);
+        setText(card.querySelector("[data-task-progress]"), task.progress || "", !task.progress);
+      };
+      const pollTaskList = async () => {
+        if (!isCurrent(revision) || !taskList.isConnected) return;
+        try {
+          const response = await window.fetch(taskList.dataset.taskStatusUrl, {
+            headers: { Accept: "application/json" },
+            cache: "no-store",
+          });
+          const payload = await parsePayload(response);
+          if (response.ok && Array.isArray(payload?.data)) payload.data.forEach(updateTaskCard);
+        } catch (_error) {
+          // Keep local task cards usable when the service is briefly restarting.
+        }
+        window.setTimeout(() => void pollTaskList(), 1200);
+      };
+      void pollTaskList();
+    }
 
     const cancellingCard = root.querySelector('[data-task-state="cancelling"]');
     if (cancellingCard?.dataset.taskId) {
