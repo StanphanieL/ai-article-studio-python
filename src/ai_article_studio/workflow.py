@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 import time
 import uuid
@@ -13,10 +12,14 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock, RLock
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from .anchors import heading_key, image_anchor_excerpt, markdown_anchor_sections
+from . import _workflow_image_plan as _image_plan
+from . import _workflow_persistence as _persistence
+from ._workflow_execution import _WorkflowExecution
+from ._workflow_images import _WorkflowImages, accepts_task_id
+from ._workflow_persistence import _WorkflowPersistence
 from .composition import compose_article
 from .config import Settings
 from .contracts import ArticleAgent
@@ -30,17 +33,13 @@ from .domain import (
 )
 from .exports import ArticleExporter, ExportFile
 from .models import AgentLog, Article
-from .providers import ImageGenerationService, calculate_image_count
+from .providers import ImageGenerationService
 from .quality import content_contract_issues, factuality_contract_issues, is_quality_gate_issue
 from .schemas import (
     ArticleModelConfig,
-    ImageCountMode,
-    ImagePlacement,
     ImagePromptOption,
     ImageProvider,
     ImageResultOption,
-    ImageVisualReview,
-    ImageVisualReviewStatus,
     ImageVisualRole,
     OutlineItem,
     QualityReviewResult,
@@ -67,15 +66,6 @@ _IMAGE_PLAN_VISUAL_FIELDS = (
     "visual_role",
     "stock_query",
 )
-_GENERATED_ROLE_FALLBACK_ORDER = (
-    ImageVisualRole.CONCEPT,
-    ImageVisualRole.DIAGRAM,
-    ImageVisualRole.SCENE,
-    ImageVisualRole.COMPARISON,
-    ImageVisualRole.DETAIL,
-    ImageVisualRole.DATA,
-    ImageVisualRole.CLOSING,
-)
 class ArticleWorkflow:
     def __init__(
         self,
@@ -96,6 +86,9 @@ class ArticleWorkflow:
         self._background_job_execution: ContextVar[bool] = ContextVar("background_job_execution", default=False)
         self._task_locks: dict[str, RLock] = {}
         self._task_locks_guard = Lock()
+        self._execution = _WorkflowExecution(self)
+        self._image_lifecycle = _WorkflowImages(self)
+        self._persistence = _WorkflowPersistence(self)
 
     @contextmanager
     def background_job_execution(self) -> Iterator[None]:
@@ -162,22 +155,7 @@ class ArticleWorkflow:
         prevents a worker from committing a result after the records are gone.
         """
 
-        with self.task_write_lock(task_id):
-            with self.sessions() as session:
-                article = (
-                    session.scalar(select(Article).where(Article.task_id == task_id))
-                    if include_legacy_soft_deleted
-                    else self._get_article(session, task_id)
-                )
-                if not article:
-                    raise WorkflowValidationError("文章任务不存在")
-                local_paths = self._local_image_paths(article.image_results)
-                referenced_paths = self._referenced_local_image_paths(session, excluding_task_id=task_id)
-                session.execute(delete(AgentLog).where(AgentLog.task_id == task_id))
-                session.delete(article)
-                session.commit()
-            self._delete_unreferenced_local_assets(task_id, local_paths, referenced_paths)
-            return True
+        return self._persistence.permanently_delete(task_id, include_legacy_soft_deleted=include_legacy_soft_deleted)
 
     def request_cancellation(self, task_id: str) -> None:
         """Persist cancellation without waiting on a busy worker lock."""
@@ -526,12 +504,7 @@ class ArticleWorkflow:
         return self._run(task_id, "QualityReviewAgent", lambda article: self._review(article))
 
     def continue_workflow(self, task_id: str) -> Article:
-        with self.task_write_lock(task_id):
-            self.ensure_not_busy(task_id)
-            decision = self.next_decision(task_id)
-            if decision.auto_revision:
-                return self._apply_review_revision(task_id, decision)
-            return self.execute_action(task_id, decision.action.value)
+        return self._execution.continue_workflow(task_id)
 
     def next_decision(self, task_id: str):
         article = self.get(task_id)
@@ -549,51 +522,7 @@ class ArticleWorkflow:
     def execute_action(self, task_id: str, action: str, provider: ImageProvider = ImageProvider.AUTO) -> Article:
         """Run a persisted supervisor action, including a failed job's retry action."""
 
-        persisted_operation = WorkflowOperation.parse(action)
-        persisted_action = persisted_operation.encode()
-        provider = self.provider_for_action(persisted_action, provider)
-        action = persisted_operation.action
-        index: int | None = None
-        raw_action, separator, raw_index = action.partition(":")
-        if raw_action == "REGENERATE_IMAGE_RESULT":
-            if not separator or not raw_index.isdigit():
-                raise WorkflowValidationError("图片重试动作不合法")
-            index = int(raw_index)
-        if raw_action == "ONE_CLICK_GENERATE":
-            return self.one_click(task_id)
-        if raw_action == "APPLY_REVIEW_REVISION":
-            return self.apply_review_revision(task_id)
-        if raw_action == "REGENERATE_IMAGE_RESULT":
-            assert index is not None
-            return self.regenerate_image_result(task_id, index, provider)
-        try:
-            supervisor_action = SupervisorAction(raw_action)
-        except ValueError as error:
-            raise WorkflowValidationError("当前任务动作不支持执行") from error
-        self._mark_current_action(task_id, persisted_action)
-        if supervisor_action is SupervisorAction.GENERATE_TITLES:
-            return self.generate_titles(task_id)
-        if supervisor_action is SupervisorAction.GENERATE_OUTLINE:
-            return self.generate_outline(task_id)
-        if supervisor_action in {SupervisorAction.GENERATE_CONTENT, SupervisorAction.REGENERATE_CONTENT}:
-            return self.generate_content(task_id)
-        if supervisor_action in {SupervisorAction.GENERATE_IMAGE_PROMPTS, SupervisorAction.REGENERATE_IMAGE_PROMPTS}:
-            return self.generate_image_prompts(task_id)
-        if supervisor_action in {SupervisorAction.GENERATE_IMAGE_RESULTS, SupervisorAction.REGENERATE_IMAGE_RESULTS}:
-            return self.generate_image_results(task_id, provider)
-        if supervisor_action is SupervisorAction.COMPOSE_ARTICLE:
-            return self.compose(task_id)
-        if supervisor_action is SupervisorAction.REVIEW_ARTICLE:
-            return self.review(task_id)
-        if supervisor_action in {
-            SupervisorAction.WAIT_FOR_TITLE,
-            SupervisorAction.MANUAL_REVIEW,
-            SupervisorAction.STOP_FAILED,
-            SupervisorAction.COMPLETE,
-        }:
-            decision = self.next_decision(task_id)
-            return self._record_decision(task_id, decision.action.value, decision.reason)
-        raise WorkflowValidationError("当前任务动作不支持执行")
+        return self._execution.execute_action(task_id, action, provider)
 
     def begin_job(
         self,
@@ -811,74 +740,20 @@ class ArticleWorkflow:
     def apply_review_revision(self, task_id: str) -> Article:
         """Apply the persisted review recommendation exactly once when eligible."""
 
-        with self.task_write_lock(task_id):
-            self.ensure_not_busy(task_id)
-            article = self.get(task_id)
-            decision = decide_next_action(article, self._review_result(article), self.settings.max_auto_review_rounds)
-            if not decision.auto_revision:
-                return self._record_decision(task_id, decision.action.value, decision.reason)
-            return self._apply_review_revision(task_id, decision)
+        return self._execution.apply_review_revision(task_id)
 
     def _apply_review_revision(self, task_id: str, decision) -> Article:
         """Regenerate the reviewed artifact, then advance the now-invalidated downstream chain."""
 
-        self._update(
-            task_id,
-            review_round=decision.review_round + 1,
-            supervisor_action=decision.action.value,
-            supervisor_reason=decision.reason,
-            review_report=None,
-            quality_score=None,
-        )
-        if decision.action is SupervisorAction.REGENERATE_CONTENT:
-            self.generate_content(task_id)
-        elif decision.action is SupervisorAction.REGENERATE_IMAGE_PROMPTS:
-            self.generate_image_prompts(task_id)
-        elif decision.action is SupervisorAction.REGENERATE_IMAGE_RESULTS:
-            self.generate_image_results(task_id, ImageProvider.AUTO)
-        else:  # Defensive guard against future supervisor actions.
-            raise WorkflowExecutionError(f"unsupported review revision: {decision.action}")
-        return self.one_click(task_id)
+        return self._execution.execute_review_revision(task_id, decision)
 
     def one_click(self, task_id: str) -> Article:
-        with self.task_write_lock(task_id):
-            self.ensure_not_busy(task_id)
-            for _ in range(24):
-                article = self.get(task_id)
-                if article.phase == ArticlePhase.COMPLETED.value:
-                    # ``background_job_execution`` is also used by a few
-                    # internal synchronous callers to bypass foreground edit
-                    # guards.  Only a persisted ONE_CLICK runner job should
-                    # remain RUNNING until JobRunner.finish_job(); a direct
-                    # orchestration call is terminal at this point.
-                    if (
-                        article.status == ArticleStatus.RUNNING.value
-                        and article.execution_mode != WorkflowRunMode.ONE_CLICK.value
-                    ):
-                        return self._update(task_id, status=ArticleStatus.SUCCESS.value)
-                    return article
-                if article.status == ArticleStatus.FAILED.value:
-                    raise WorkflowExecutionError("任务已失败，请通过后台重试继续一键生成")
-                if article.phase == ArticlePhase.TITLE_SELECTION.value and not article.selected_title:
-                    titles = self._titles(article)
-                    if not titles:
-                        raise WorkflowExecutionError("标题候选为空")
-                    self.confirm_title(task_id, titles[0].title)
-                    continue
-                updated = self.continue_workflow(task_id)
-                if updated.supervisor_action in {SupervisorAction.MANUAL_REVIEW.value, SupervisorAction.WAIT_FOR_TITLE.value}:
-                    return updated
-            raise WorkflowExecutionError("一键生成超过最大步骤数")
+        return self._execution.one_click(task_id)
 
     def one_click_initial_action(self, task_id: str) -> str:
         """Return the first concrete action users should see for a one-click run."""
 
-        article = self.get(task_id)
-        if article.status == ArticleStatus.FAILED.value and article.supervisor_action:
-            return self.public_action(article.supervisor_action) or article.supervisor_action
-        if article.phase == ArticlePhase.TITLE_SELECTION.value and not article.selected_title:
-            return SupervisorAction.GENERATE_OUTLINE.value
-        return self.next_decision(task_id).action.value
+        return self._execution.one_click_initial_action(task_id)
 
     def save_model_config(self, task_id: str, style: str, config: ArticleModelConfig) -> Article:
         with self.task_write_lock(task_id):
@@ -934,11 +809,7 @@ class ArticleWorkflow:
         return self.exporter.export_zip(article.selected_title or article.topic, article.final_markdown or "", self._images(article))
 
     def logs(self, task_id: str) -> list[AgentLog]:
-        with self.sessions() as session:
-            logs = list(session.scalars(select(AgentLog).where(AgentLog.task_id == task_id).order_by(AgentLog.create_time.desc())))
-            for log in logs:
-                session.expunge(log)
-            return logs
+        return self._persistence.logs(task_id)
 
     def _generate_titles(self, article: Article) -> str:
         agent = self._agent_for(article)
@@ -984,19 +855,7 @@ class ArticleWorkflow:
         return article.content
 
     def _generate_image_prompts(self, article: Article) -> str:
-        if not article.content or not article.selected_title:
-            raise WorkflowValidationError("请先生成正文")
-        config = self._config(article)
-        count = config.image_count if config.image_count_mode is ImageCountMode.CUSTOM else calculate_image_count(article.content)
-        prompts = self._agent_for(article).image_prompts(article.topic, article.selected_title, article.content, article.style, count or 3)
-        prompts, adjusted = self._normalize_generated_image_plan(article.content, prompts)
-        self._validate_image_plan_contract(article.content, prompts)
-        article.image_prompts = json.dumps([item.model_dump(by_alias=True) for item in prompts], ensure_ascii=False)
-        article.image_results = article.final_markdown = None
-        article.review_report = article.quality_score = None
-        article.phase = ArticlePhase.CONTENT_GENERATION.value
-        article.status = ArticleStatus.SUCCESS.value
-        return "配图方案已生成" + (f"；已自动校准 {adjusted} 项图片编排" if adjusted else "")
+        return self._image_lifecycle.generate_image_prompts(article)
 
     def _generate_images_incrementally(self, task_id: str, requested_provider: ImageProvider) -> None:
         """Generate and persist each asset at an independent recovery boundary.
@@ -1006,49 +865,7 @@ class ArticleWorkflow:
         making the user wait through the whole batch again.
         """
 
-        with self.task_write_lock(task_id):
-            article = self.get(task_id)
-            self._ensure_article_writable(article)
-            raw_prompts = self._prompts(article)
-            prompts = [self._with_anchor_excerpt(article.content or "", prompt) for prompt in raw_prompts]
-            if not prompts:
-                raise WorkflowValidationError("请先生成图片提示词")
-            if prompts != raw_prompts:
-                # Existing task records predate anchor excerpts. Upgrade them
-                # lazily at the safe pre-generation boundary so retrying an
-                # older plan gets the same grounded provider prompt as a newly
-                # created plan, without forcing the user to regenerate it.
-                self._update(task_id, image_prompts=self._dump_image_records(prompts))
-            results = self._images(article)
-            if len(results) > len(prompts):
-                raise WorkflowValidationError("图片结果数量异常，请重新生成图片素材")
-
-            config = self._config(article)
-            if requested_provider is ImageProvider.AUTO and config.image_provider is not ImageProvider.AUTO:
-                # An article-level setting is an explicit user choice in both
-                # manual and one-click flows. Only AUTO is allowed to try a
-                # different supplier or a local fallback.
-                provider = config.image_provider
-            else:
-                provider = requested_provider
-
-            for index in range(len(results), len(prompts)):
-                if self.cancellation_requested(task_id):
-                    raise WorkflowCancellationRequested("任务已请求取消")
-                self._record_image_generation_progress(task_id, results, index, len(prompts), provider)
-                started = time.perf_counter()
-                try:
-                    result = self._generate_image_for_task(
-                        prompts[index],
-                        provider,
-                        index,
-                        task_id,
-                    )
-                except Exception as error:
-                    self._record_image_generation_failure(task_id, index, len(prompts), provider, error, started)
-                    raise
-                results.append(result)
-                self._record_image_generation_progress(task_id, results, index + 1, len(prompts), provider, started=started)
+        return self._image_lifecycle.generate_images_incrementally(task_id, requested_provider)
 
     def _record_image_generation_progress(
         self,
@@ -1062,32 +879,7 @@ class ArticleWorkflow:
     ) -> None:
         """Publish real progress and keep the successfully generated prefix."""
 
-        with self.sessions() as session:
-            article = self._get_article(session, task_id)
-            article.image_results = self._dump_image_records(results) if results else None
-            article.final_markdown = None
-            article.review_report = article.quality_score = None
-            article.phase = ArticlePhase.CONTENT_GENERATION.value
-            article.supervisor_action = self.encode_image_action(SupervisorAction.GENERATE_IMAGE_RESULTS.value, provider)
-            article.supervisor_reason = (
-                f"已生成 {completed}/{total} 张图片" if completed >= total else f"正在生成第 {completed + 1}/{total} 张图片"
-            )
-            if self._background_job_execution.get():
-                article.status = ArticleStatus.RUNNING.value
-            else:
-                article.status = ArticleStatus.SUCCESS.value
-            article.error_message = None
-            article.update_time = self._clock()
-            if started is not None:
-                self._log(
-                    session,
-                    task_id,
-                    "ImageResultAgent",
-                    f"image={completed}/{total}; provider={provider.value}",
-                    article.supervisor_reason,
-                    started,
-                )
-            session.commit()
+        return self._image_lifecycle.record_image_generation_progress(task_id, results, completed, total, provider, started=started)
 
     def _record_image_generation_failure(
         self,
@@ -1098,76 +890,18 @@ class ArticleWorkflow:
         error: Exception,
         started: float,
     ) -> None:
-        with self.sessions() as session:
-            article = self._get_article(session, task_id)
-            article.status = ArticleStatus.FAILED.value
-            article.supervisor_action = self.encode_image_action(SupervisorAction.GENERATE_IMAGE_RESULTS.value, provider)
-            article.supervisor_reason = f"第 {index + 1}/{total} 张图片生成失败，可重试剩余图片"
-            article.error_message = _safe_error_message(error)
-            article.update_time = self._clock()
-            self._log(
-                session,
-                task_id,
-                "ImageResultAgent",
-                f"image={index + 1}/{total}; provider={provider.value}",
-                None,
-                started,
-                error,
-            )
-            session.commit()
+        return self._image_lifecycle.record_image_generation_failure(task_id, index, total, provider, error, started)
 
     def _regenerate_image_result(self, article: Article, index: int, provider: ImageProvider) -> str:
-        raw_prompts, results = self._prompts(article), self._images(article)
-        prompts = [self._with_anchor_excerpt(article.content or "", prompt) for prompt in raw_prompts]
-        if prompts != raw_prompts:
-            article.image_prompts = self._dump_image_records(prompts)
-        if index < 0 or index >= len(prompts) or len(results) > len(prompts):
-            raise WorkflowValidationError("图片索引或图片数据不合法")
-        if index > len(results):
-            raise WorkflowValidationError("请先重试前一张未完成的图片")
-        generated = self._generate_image_for_task(prompts[index], provider, index, article.task_id)
-        if index == len(results):
-            results.append(generated)
-        else:
-            results[index] = generated
-        article.image_results = json.dumps([item.model_dump(by_alias=True) for item in results], ensure_ascii=False)
-        article.final_markdown = None
-        article.review_report = article.quality_score = None
-        article.phase = ArticlePhase.CONTENT_GENERATION.value
-        article.status = ArticleStatus.SUCCESS.value
-        article.supervisor_action = None
-        article.supervisor_reason = "单张图片已重试，请继续合成图文稿并重新评审"
-        return article.image_results
+        return self._image_lifecycle.regenerate_image_result(article, index, provider)
 
     def _review_generated_images(self, article: Article, indices: list[int] | None = None) -> str:
         """Attach optional visual checks without changing workflow state or assets."""
 
-        prompts, results = self._prompts(article), self._images(article)
-        if len(prompts) != len(results):
-            raise WorkflowValidationError("图片结果与配图方案数量不一致，无法执行视觉质检")
-        selected_indices = indices if indices is not None else list(range(len(results)))
-        for index in selected_indices:
-            if index < 0 or index >= len(results):
-                raise WorkflowValidationError("图片索引不存在，无法执行视觉质检")
-            results[index] = results[index].model_copy(
-                update={"visual_review": self._safe_visual_review(results[index], prompts[index])}
-            )
-        article.image_results = self._dump_image_records(results)
-        counts: dict[str, int] = {}
-        for index in selected_indices:
-            status = results[index].visual_review.status.value
-            counts[status] = counts.get(status, 0) + 1
-        return "视觉质检：" + "，".join(f"{status} {count}" for status, count in sorted(counts.items()))
+        return self._image_lifecycle.review_generated_images(article, indices)
 
     def _safe_visual_review(self, image: ImageResultOption, prompt: ImagePromptOption):
-        try:
-            return self.vision_reviewer.review(image, prompt)
-        except Exception:
-            # Third-party visual review must never fail a usable generated image.
-            return ImageVisualReview(
-                status=ImageVisualReviewStatus.UNAVAILABLE,
-                issues=["视觉质检结果不可用，可按需重试。"],
-            )
+        return self._image_lifecycle.safe_visual_review(image, prompt)
 
     def _compose(self, article: Article) -> str:
         article.final_markdown = compose_article(article.selected_title or "", article.content or "", self._images(article))
@@ -1213,43 +947,7 @@ class ArticleWorkflow:
         return article.review_report
 
     def _run(self, task_id: str, agent_name: str, operation: Callable[[Article], str]) -> Article:
-        with self.task_write_lock(task_id):
-            with self.sessions() as session:
-                article = self._get_article(session, task_id)
-                self._ensure_article_writable(article)
-                started = time.perf_counter()
-                try:
-                    if self.cancellation_requested(task_id):
-                        raise WorkflowCancellationRequested("任务已请求取消")
-                    output = operation(article)
-                    if self.cancellation_requested(task_id):
-                        raise WorkflowCancellationRequested("任务已请求取消")
-                    if self._background_job_execution.get():
-                        # Each agent persists its own artifact and normally
-                        # labels that local boundary SUCCESS.  A JobRunner may
-                        # still be executing later one-click substeps, though;
-                        # only finish_job() is allowed to expose a terminal
-                        # success to the page and compatibility APIs.
-                        article.status = ArticleStatus.RUNNING.value
-                    article.error_message = None
-                    # Keep active-job elapsed time on the application clock.
-                    # SQLite's ``func.now()`` uses UTC while this local UI
-                    # intentionally displays the configured local clock.
-                    article.update_time = self._clock()
-                    self._log(session, task_id, agent_name, "input managed by workflow", output, started)
-                    session.commit()
-                    session.refresh(article)
-                    session.expunge(article)
-                    return article
-                except WorkflowCancellationRequested:
-                    session.rollback()
-                    raise
-                except Exception as error:
-                    article.status = ArticleStatus.FAILED.value
-                    article.error_message = _safe_error_message(error)
-                    self._log(session, task_id, agent_name, "input managed by workflow", None, started, error)
-                    session.commit()
-                    raise
+        return self._execution.run(task_id, agent_name, operation)
 
     def _mark_interrupted_stream_retryable(self, task_id: str) -> None:
         """Turn an abandoned SSE response into a normal, retryable content job."""
@@ -1270,24 +968,13 @@ class ArticleWorkflow:
                 session.commit()
 
     def _update(self, task_id: str, **values: object) -> Article:
-        with self.task_write_lock(task_id):
-            with self.sessions() as session:
-                article = self._get_article(session, task_id)
-                self._ensure_article_writable(article)
-                for field, value in values.items():
-                    setattr(article, field, value)
-                article.update_time = self._clock()
-                session.commit()
-                session.refresh(article)
-                session.expunge(article)
-                return article
+        return self._persistence.update(task_id, **values)
 
     def _update_downstream(self, task_id: str, **values: object) -> Article:
-        values.update({"image_prompts": None, "image_results": None, "final_markdown": None, "review_report": None, "quality_score": None})
-        return self._update(task_id, **values)
+        return self._persistence.update_downstream(task_id, **values)
 
     def _record_decision(self, task_id: str, action: str, reason: str) -> Article:
-        return self._update(task_id, supervisor_action=action, supervisor_reason=reason)
+        return self._persistence.record_decision(task_id, action, reason)
 
     def _mark_current_action(self, task_id: str, action: str) -> Article:
         """Persist the actual sub-step before invoking a provider.
@@ -1297,11 +984,7 @@ class ArticleWorkflow:
         and a normal step retry still has an exact provider-aware action.
         """
 
-        return self._update(
-            task_id,
-            supervisor_action=action,
-            supervisor_reason=f"正在执行：{self.action_label(action)}",
-        )
+        return self._persistence.mark_current_action(task_id, action)
 
     def _ensure_article_writable(self, article: Article) -> None:
         if article.status == ArticleStatus.CANCELLING.value:
@@ -1323,105 +1006,13 @@ class ArticleWorkflow:
         method and remain strict.
         """
 
-        sections = markdown_anchor_sections(content)
-        by_key: dict[str, object] = {}
-        for section in sections:
-            by_key.setdefault(section.key, section)
-        normalized: list[ImagePromptOption] = []
-        adjusted_indices: set[int] = set()
-        fallback_cursor = 0
-
-        def choose_fallback(excluded: set[str]) -> tuple[str, int, ImagePlacement]:
-            nonlocal fallback_cursor
-            if not sections:
-                return "", 0, ImagePlacement.AFTER_INTRO
-            for offset in range(len(sections)):
-                section = sections[(fallback_cursor + offset) % len(sections)]
-                candidate = f"section-end:{section.key}"
-                if candidate not in excluded:
-                    fallback_cursor = (fallback_cursor + offset + 1) % len(sections)
-                    return section.heading, 0, ImagePlacement.SECTION_END
-            section = sections[fallback_cursor % len(sections)]
-            fallback_cursor = (fallback_cursor + 1) % len(sections)
-            return section.heading, 0, ImagePlacement.SECTION_END
-
-        previous_anchor = ""
-        for index, plan in enumerate(plans):
-            original = plan
-            if plan.placement is ImagePlacement.COVER:
-                plan = plan.model_copy(
-                    update={"placement": ImagePlacement.COVER, "anchor_heading": "", "anchor_paragraph": 0}
-                )
-            elif plan.placement is ImagePlacement.AFTER_INTRO:
-                plan = plan.model_copy(update={"anchor_heading": "", "anchor_paragraph": 0})
-            else:
-                section = by_key.get(heading_key(plan.anchor_heading))
-                if section is None:
-                    heading, paragraph, placement = choose_fallback({previous_anchor})
-                    plan = plan.model_copy(
-                        update={"anchor_heading": heading, "anchor_paragraph": paragraph, "placement": placement}
-                    )
-                elif plan.placement is ImagePlacement.AFTER_PARAGRAPH:
-                    if section.paragraphs:
-                        paragraph = min(max(plan.anchor_paragraph, 1), len(section.paragraphs))
-                        plan = plan.model_copy(
-                            update={"anchor_heading": section.heading, "anchor_paragraph": paragraph}
-                        )
-                    else:
-                        plan = plan.model_copy(
-                            update={
-                                "anchor_heading": section.heading,
-                                "anchor_paragraph": 0,
-                                "placement": ImagePlacement.SECTION_END,
-                            }
-                        )
-                else:
-                    plan = plan.model_copy(
-                        update={"anchor_heading": section.heading, "anchor_paragraph": 0, "placement": ImagePlacement.SECTION_END}
-                    )
-
-            if plan != original:
-                adjusted_indices.add(index)
-            normalized.append(plan)
-            previous_anchor = ArticleWorkflow._image_anchor_key(plan)
-
-        # ``visual_role`` is presentation metadata, not a structural anchor.
-        # The model is told to keep it unique, but repairing a duplicate here
-        # is safer than failing before any image-provider call. COVER remains
-        # deliberately strict: a missing, duplicated, or misplaced cover is a
-        # structural error that must be shown to the user rather than guessed.
-        used_roles: set[ImageVisualRole] = set()
-        role_normalized: list[ImagePromptOption] = []
-        for index, plan in enumerate(normalized):
-            if plan.visual_role in used_roles and plan.visual_role is not ImageVisualRole.COVER:
-                replacement = ArticleWorkflow._replacement_visual_role(plan, used_roles)
-                if replacement is not None:
-                    plan = plan.model_copy(update={"visual_role": replacement})
-                    adjusted_indices.add(index)
-            role_normalized.append(plan)
-            used_roles.add(plan.visual_role)
-        grounded: list[ImagePromptOption] = []
-        for index, plan in enumerate(role_normalized):
-            evidence_bound = ArticleWorkflow._with_anchor_excerpt(content, plan)
-            if evidence_bound != plan:
-                adjusted_indices.add(index)
-            grounded.append(evidence_bound)
-        return grounded, len(adjusted_indices)
+        return _image_plan.normalize_generated_image_plan(content, plans)
 
     @staticmethod
     def _with_anchor_excerpt(content: str, plan: ImagePromptOption) -> ImagePromptOption:
         """Bind a plan to the authoritative prose it should make visible."""
 
-        return plan.model_copy(
-            update={
-                "anchor_excerpt": image_anchor_excerpt(
-                    content,
-                    plan.placement,
-                    plan.anchor_heading,
-                    plan.anchor_paragraph,
-                )
-            }
-        )
+        return _image_plan.with_anchor_excerpt(content, plan)
 
     @staticmethod
     def _replacement_visual_role(
@@ -1436,178 +1027,46 @@ class ArticleWorkflow:
         no useful hint.
         """
 
-        semantic_text = " ".join(
-            (plan.image_title, plan.usage_scene, plan.prompt_zh, plan.prompt_en)
-        ).casefold()
-        preferred: list[ImageVisualRole] = []
-
-        def add_if_matches(role: ImageVisualRole, keywords: tuple[str, ...]) -> None:
-            if any(keyword in semantic_text for keyword in keywords):
-                preferred.append(role)
-
-        add_if_matches(
-            ImageVisualRole.DIAGRAM,
-            ("diagram", "flow", "workflow", "architecture", "interface", "ui", "图解", "流程", "架构", "界面", "信息图"),
-        )
-        add_if_matches(
-            ImageVisualRole.DATA,
-            ("data", "chart", "metric", "dashboard", "数据", "图表", "指标", "看板"),
-        )
-        add_if_matches(
-            ImageVisualRole.COMPARISON,
-            ("compare", "comparison", "versus", "对比", "比较", "前后"),
-        )
-        add_if_matches(
-            ImageVisualRole.SCENE,
-            ("scene", "photo", "portrait", "people", "人物", "场景", "照片"),
-        )
-        add_if_matches(
-            ImageVisualRole.DETAIL,
-            ("detail", "closeup", "局部", "细节", "特写"),
-        )
-        add_if_matches(
-            ImageVisualRole.CLOSING,
-            ("closing", "conclusion", "ending", "结尾", "结语", "收束"),
-        )
-
-        for candidate in (*preferred, *_GENERATED_ROLE_FALLBACK_ORDER):
-            if candidate not in used_roles:
-                return candidate
-        return None
+        return _image_plan.replacement_visual_role(plan, used_roles)
 
     @staticmethod
     def _validate_image_plan_anchor(content: str, plan: ImagePromptOption) -> None:
         """Reject stale or impossible editor anchors before persisting them."""
 
-        if not content.strip():
-            raise WorkflowValidationError("请先生成正文，再调整图片位置")
-        anchor_heading = plan.anchor_heading.strip()
-        placement = plan.placement
-        if placement in {ImagePlacement.COVER, ImagePlacement.AFTER_INTRO}:
-            if anchor_heading or plan.anchor_paragraph:
-                raise WorkflowValidationError("封面或导语后的配图不能指定章节或段落锚点")
-            return
-
-        sections = ArticleWorkflow._markdown_sections(content)
-        matching = next(
-            ((heading, blocks) for heading, blocks in sections if ArticleWorkflow._heading_key(heading) == ArticleWorkflow._heading_key(anchor_heading)),
-            None,
-        )
-        if matching is None:
-            raise WorkflowValidationError(f"未找到锚点标题：{anchor_heading or '（未填写）'}")
-        _heading, blocks = matching
-        if placement is ImagePlacement.AFTER_PARAGRAPH:
-            if not 1 <= plan.anchor_paragraph <= len(blocks):
-                raise WorkflowValidationError(f"锚点段落无效：标题“{anchor_heading}”下共有 {len(blocks)} 段，不能定位第 {plan.anchor_paragraph} 段")
-            return
-        if plan.anchor_paragraph != 0:
-            raise WorkflowValidationError("章节末尾配图的段落序号必须为 0")
+        return _image_plan.validate_image_plan_anchor(content, plan)
 
     @staticmethod
     def _validate_image_plan_contract(content: str, plans: list[ImagePromptOption]) -> None:
         """Keep generated and manually arranged plans structurally composable."""
 
-        if not plans:
-            raise WorkflowValidationError("配图方案不能为空")
-        for plan in plans:
-            ArticleWorkflow._validate_image_plan_anchor(content, plan)
-
-        cover_indices = [index for index, plan in enumerate(plans) if plan.visual_role is ImageVisualRole.COVER]
-        if len(cover_indices) != 1:
-            raise WorkflowValidationError("配图方案必须且只能包含一张封面图")
-        if cover_indices[0] != 0:
-            raise WorkflowValidationError("封面图必须位于配图方案第 1 项")
-        if plans[0].placement is not ImagePlacement.COVER or any(
-            plan.placement is ImagePlacement.COVER for plan in plans[1:]
-        ):
-            raise WorkflowValidationError("封面图必须使用 COVER 位置，且其他配图不能使用 COVER 位置")
-
-        roles = [plan.visual_role for plan in plans]
-        if len(set(roles)) != len(roles):
-            raise WorkflowValidationError("同一配图方案中的视觉角色不能重复")
-
-        for previous, current in zip(plans, plans[1:]):
-            if ArticleWorkflow._image_anchor_key(previous) == ArticleWorkflow._image_anchor_key(current):
-                raise WorkflowValidationError("相邻配图不能使用同一锚点")
+        return _image_plan.validate_image_plan_contract(content, plans)
 
     @staticmethod
     def _image_anchor_key(plan: ImagePromptOption) -> str:
-        if plan.placement is ImagePlacement.COVER:
-            return "cover"
-        if plan.placement is ImagePlacement.AFTER_INTRO:
-            return "intro"
-        heading = ArticleWorkflow._heading_key(plan.anchor_heading)
-        if plan.placement is ImagePlacement.AFTER_PARAGRAPH:
-            return f"paragraph:{heading}:{plan.anchor_paragraph}"
-        return f"section-end:{heading}"
+        return _image_plan.image_anchor_key(plan)
 
     @staticmethod
     def _markdown_sections(content: str) -> list[tuple[str, tuple[str, ...]]]:
-        return [(section.heading, section.paragraphs) for section in markdown_anchor_sections(content)]
+        return _image_plan.markdown_sections(content)
 
     @staticmethod
     def _heading_key(value: str) -> str:
-        return heading_key(value)
+        return _image_plan.canonical_heading_key(value)
 
     @staticmethod
     def _dump_image_records(records: list[ImagePromptOption] | list[ImageResultOption]) -> str:
-        return json.dumps([record.model_dump(by_alias=True) for record in records], ensure_ascii=False)
+        return _image_plan.dump_image_records(records)
 
     def _local_image_paths(self, raw_image_results: str | None) -> set[Path]:
-        """Resolve only app-hosted image URLs; never touch remote supplier URLs."""
-
-        try:
-            results = json.loads(raw_image_results or "[]")
-        except json.JSONDecodeError:
-            return set()
-        if not isinstance(results, list):
-            return set()
-
-        root = self.settings.upload_dir.resolve()
-        paths: set[Path] = set()
-        for result in results:
-            if not isinstance(result, dict):
-                continue
-            image_url = result.get("imageUrl")
-            if not isinstance(image_url, str) or not image_url.startswith("/uploads/images/"):
-                continue
-            relative = image_url.removeprefix("/uploads/images/")
-            if not relative:
-                continue
-            candidate = (root / relative).resolve()
-            if candidate.is_relative_to(root):
-                paths.add(candidate)
-        return paths
+        return _persistence.local_image_paths(raw_image_results, self.settings.upload_dir)
 
     def _referenced_local_image_paths(self, session: Session, excluding_task_id: str) -> set[Path]:
-        referenced: set[Path] = set()
-        rows = session.scalars(select(Article.image_results).where(Article.task_id != excluding_task_id))
-        for raw_image_results in rows:
-            referenced.update(self._local_image_paths(raw_image_results))
-        return referenced
+        return self._persistence.referenced_local_image_paths(session, excluding_task_id)
 
     def _delete_unreferenced_local_assets(self, task_id: str, local_paths: set[Path], referenced_paths: set[Path]) -> None:
         """Clean this task's generated files without touching shared/manual assets."""
 
-        for path in local_paths - referenced_paths:
-            path.unlink(missing_ok=True)
-
-        root = self.settings.upload_dir.resolve()
-        task_dir = (root / task_id).resolve()
-        if not task_dir.is_relative_to(root) or not task_dir.is_dir():
-            return
-        for path in sorted(task_dir.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-            if path.is_file() and path.resolve() not in referenced_paths:
-                path.unlink(missing_ok=True)
-            elif path.is_dir():
-                try:
-                    path.rmdir()
-                except OSError:
-                    pass
-        try:
-            task_dir.rmdir()
-        except OSError:
-            pass
+        return self._persistence.delete_unreferenced_local_assets(task_id, local_paths, referenced_paths)
 
     def _generate_images_for_task(
         self,
@@ -1615,10 +1074,7 @@ class ArticleWorkflow:
         provider: ImageProvider,
         task_id: str,
     ) -> list[ImageResultOption]:
-        generate = self.images.generate
-        if _accepts_task_id(generate):
-            return generate(prompts, provider, task_id=task_id)
-        return generate(prompts, provider)
+        return self._image_lifecycle.generate_images_for_task(prompts, provider, task_id)
 
     def _generate_image_for_task(
         self,
@@ -1627,11 +1083,7 @@ class ArticleWorkflow:
         index: int,
         task_id: str,
     ) -> ImageResultOption:
-        generate_one = self.images.generate_one
-        kwargs: dict[str, object] = {}
-        if _accepts_task_id(generate_one):
-            kwargs["task_id"] = task_id
-        return generate_one(prompt, provider, index, **kwargs)
+        return self._image_lifecycle.generate_image_for_task(prompt, provider, index, task_id)
 
     def _lock_for_task(self, task_id: str) -> RLock:
         with self._task_locks_guard:
@@ -1639,10 +1091,7 @@ class ArticleWorkflow:
 
     @staticmethod
     def _get_article(session: Session, task_id: str) -> Article:
-        article = session.scalar(select(Article).where(Article.task_id == task_id, Article.is_deleted == 0))
-        if not article:
-            raise WorkflowValidationError("文章任务不存在")
-        return article
+        return _persistence.get_article(session, task_id)
 
     @staticmethod
     def _log(
@@ -1654,17 +1103,7 @@ class ArticleWorkflow:
         started: float,
         error: Exception | None = None,
     ) -> None:
-        session.add(
-            AgentLog(
-                task_id=task_id,
-                agent_name=agent_name,
-                input_text=_redact_sensitive_text(input_text)[:4000],
-                output_text=_redact_sensitive_text(output_text or "")[:8000] or None,
-                status="FAILED" if error else "SUCCESS",
-                cost_ms=int((time.perf_counter() - started) * 1000),
-                error_message=_safe_error_message(error)[:1000] if error else None,
-            )
-        )
+        return _persistence.record_log(session, task_id, agent_name, input_text, output_text, started, error)
 
     @staticmethod
     def _config(article: Article) -> ArticleModelConfig:
@@ -1753,7 +1192,7 @@ def _sse(event: str, payload: dict[str, object]) -> str:
 def _safe_error_message(error: Exception) -> str:
     """Return an error safe for persistence and page/API diagnostics."""
 
-    return _redact_sensitive_text(str(error))
+    return _persistence.safe_error_message(error)
 
 
 def _redact_sensitive_text(value: str) -> str:
@@ -1763,8 +1202,4 @@ def _redact_sensitive_text(value: str) -> str:
 
 
 def _accepts_task_id(operation: object) -> bool:
-    try:
-        parameters = inspect.signature(operation).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(parameter.name == "task_id" or parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+    return accepts_task_id(operation)
