@@ -401,10 +401,12 @@ class GoogleAIImageProvider:
         try:
             parts = response.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
             inline = next((part.get("inlineData") for part in parts if part.get("inlineData")), None)
-            if not isinstance(inline, dict) or not isinstance(inline.get("data"), str):
+            if not isinstance(inline, dict) or not isinstance(inline.get("data"), str) or not inline["data"]:
                 raise ValueError("missing inline image data")
             suffix = _extension_for_content_type(inline.get("mimeType", "image/png"))
             image_bytes = base64.b64decode(inline["data"], validate=True)
+            if not image_bytes:
+                raise ValueError("empty inline image data")
         except (AttributeError, IndexError, TypeError, ValueError, binascii.Error) as error:
             raise AdapterResponseError("Google AI response has no inline image") from error
         local_url = persist_bytes(image_bytes, self.upload_dir, suffix, task_id=task_id)

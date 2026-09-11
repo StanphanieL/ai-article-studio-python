@@ -574,6 +574,38 @@ def test_google_provider_uses_header_for_key_and_persists_inline_image(tmp_path)
     assert (tmp_path / result.image_url.rsplit("/", 1)[-1]).read_bytes() == b"image"
 
 
+def test_google_provider_rejects_empty_inline_image_without_persisting(tmp_path, monkeypatch) -> None:
+    import ai_article_studio.providers as providers_module
+    from ai_article_studio.domain import AdapterResponseError
+    from ai_article_studio.providers import GoogleAIImageProvider
+
+    persist_calls: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"inlineData": {"mimeType": "image/png", "data": ""}}]}}]},
+            request=request,
+        )
+
+    def record_persist(content: bytes, *_args, **_kwargs) -> str:
+        persist_calls.append(content)
+        return "/uploads/images/unexpected.png"
+
+    monkeypatch.setattr(providers_module, "persist_bytes", record_persist)
+    provider = GoogleAIImageProvider(
+        "test-google-key",
+        "gemini-test",
+        tmp_path,
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(AdapterResponseError, match="Google AI response has no inline image"):
+        provider.generate(prompt(), 0)
+
+    assert persist_calls == []
+
+
 def test_siliconflow_provider_uses_the_current_images_endpoint_payload_and_persists_the_asset(tmp_path) -> None:
     from ai_article_studio.providers import SiliconFlowImageProvider
 
