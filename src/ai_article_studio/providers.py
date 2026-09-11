@@ -10,11 +10,19 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Protocol
 
 import httpx
 
 from .config import Settings
+from .contracts import ImageProviderClient
+from .domain import (
+    AdapterAuthenticationError,
+    AdapterConfigurationError,
+    AdapterResponseError,
+    AdapterTransportError,
+    WorkflowValidationError,
+    safe_adapter_error_message,
+)
 from .safe_fetch import fetch_trusted_image
 from .schemas import ImagePromptOption, ImageProvider, ImageResultOption, ImageVisualRole
 
@@ -68,12 +76,6 @@ STOCK_QUERY_STOPWORDS = frozenset(
 )
 
 
-class ImageProviderClient(Protocol):
-    """A single, explicit image provider implementation."""
-
-    def generate(self, prompt: ImagePromptOption, index: int, *, task_id: str | None = None) -> ImageResultOption: ...
-
-
 class MissingProvider:
     """Produces a safe error when a real integration lacks credentials."""
 
@@ -81,7 +83,7 @@ class MissingProvider:
         self.name = name
 
     def generate(self, prompt: ImagePromptOption, index: int, *, task_id: str | None = None) -> ImageResultOption:
-        raise RuntimeError(f"{self.name} API key is not configured")
+        raise AdapterConfigurationError(f"{self.name} API key is not configured")
 
 
 def calculate_image_count(content: str) -> int:
@@ -170,9 +172,12 @@ class ImageGenerationService:
 
     @staticmethod
     def _generate(provider: ImageProviderClient, prompt: ImagePromptOption, index: int, task_id: str | None) -> ImageResultOption:
-        if task_id is None or not _supports_task_id(provider.generate):
-            return provider.generate(prompt, index)
-        return provider.generate(prompt, index, task_id=task_id)
+        try:
+            if task_id is None or not _supports_task_id(provider.generate):
+                return provider.generate(prompt, index)
+            return provider.generate(prompt, index, task_id=task_id)
+        except httpx.HTTPError as error:
+            raise AdapterTransportError(safe_adapter_error_message(error, "图片服务暂不可用，请稍后重试。")) from error
 
 
 class MockImageProvider:
@@ -223,20 +228,26 @@ class PexelsImageProvider:
 
     def generate(self, prompt: ImagePromptOption, index: int, *, task_id: str | None = None) -> ImageResultOption:
         query = _resolve_query(prompt)
-        response = self.client.get(
-            "https://api.pexels.com/v1/search",
-            headers={"Authorization": self.api_key},
-            params={"query": query, "per_page": 10, "orientation": "landscape"},
-        )
-        response.raise_for_status()
-        photos = response.json().get("photos", [])
+        try:
+            response = self.client.get(
+                "https://api.pexels.com/v1/search",
+                headers={"Authorization": self.api_key},
+                params={"query": query, "per_page": 10, "orientation": "landscape"},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise AdapterTransportError("Pexels 图片服务暂不可用，请稍后重试。") from error
+        try:
+            photos = response.json().get("photos", [])
+        except (AttributeError, TypeError, ValueError) as error:
+            raise AdapterResponseError("Pexels 返回的图片数据不合法") from error
         photo = next((candidate for candidate in photos if _matches_stock_query(candidate, query)), None)
         if not photo:
-            raise RuntimeError("Pexels returned no photo matching stock query")
+            raise AdapterResponseError("Pexels returned no photo matching stock query")
         src = photo.get("src", {})
         image_url = src.get("landscape") or src.get("large") or src.get("original")
         if not image_url:
-            raise RuntimeError("Pexels photo has no usable image URL")
+            raise AdapterResponseError("Pexels photo has no usable image URL")
         return ImageResultOption(
             image_title=prompt.image_title,
             usage_scene=prompt.usage_scene,
@@ -289,7 +300,7 @@ class SiliconFlowImageProvider:
     def generate(self, prompt: ImagePromptOption, index: int, *, task_id: str | None = None) -> ImageResultOption:
         model_name = self.model.casefold()
         if model_name.startswith("qwen/qwen-image-edit"):
-            raise ValueError(
+            raise WorkflowValidationError(
                 "SiliconFlow 图像编辑模型需要提供源图片；当前文章配图仅支持文生图，请改用 Kwai-Kolors/Kolors 或 Qwen/Qwen-Image。"
             )
         payload = {
@@ -319,16 +330,22 @@ class SiliconFlowImageProvider:
             payload["negative_prompt"] = self.negative_prompt.strip()
         response = self._post_generation(payload)
         if response.status_code == 401:
-            raise RuntimeError(
+            raise AdapterAuthenticationError(
                 "SiliconFlow 鉴权失败（401）：请检查 AI_ARTICLE_STUDIO_SILICONFLOW_API_KEY。"
                 "百炼 / DashScope 的 Key 不能用于 SiliconFlow 图片接口。"
             )
         if response.status_code == 403:
-            raise RuntimeError("SiliconFlow 无权调用当前图片模型（403）：请检查账号权限、余额和模型可用性。")
-        response.raise_for_status()
-        image_url = _siliconflow_image_url(response.json())
+            raise AdapterAuthenticationError("SiliconFlow 无权调用当前图片模型（403）：请检查账号权限、余额和模型可用性。")
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            raise AdapterTransportError("SiliconFlow 图片服务暂不可用，请稍后重试。") from error
+        try:
+            image_url = _siliconflow_image_url(response.json())
+        except (TypeError, ValueError) as error:
+            raise AdapterResponseError("SiliconFlow 响应中没有可下载的图片地址") from error
         if not image_url:
-            raise RuntimeError("SiliconFlow 响应中没有可下载的图片地址")
+            raise AdapterResponseError("SiliconFlow 响应中没有可下载的图片地址")
         local_url = persist_remote_image(image_url, self.upload_dir, self.client, task_id=task_id)
         return _generated_result(prompt, local_url, "SILICONFLOW")
 
@@ -342,15 +359,18 @@ class SiliconFlowImageProvider:
         """
 
         for attempt in range(2):
-            response = self.client.post(
-                f"{self.base_url}/images/generations",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=payload,
-            )
+            try:
+                response = self.client.post(
+                    f"{self.base_url}/images/generations",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=payload,
+                )
+            except httpx.HTTPError as error:
+                raise AdapterTransportError("SiliconFlow 图片服务暂不可用，请稍后重试。") from error
             if response.status_code not in {429, 503, 504} or attempt == 1:
                 return response
             time.sleep(_retry_after_seconds(response))
-        raise RuntimeError("unreachable")
+        raise AdapterTransportError("SiliconFlow 图片服务暂不可用，请稍后重试。")
 
 
 class GoogleAIImageProvider:
@@ -369,16 +389,22 @@ class GoogleAIImageProvider:
         self.client = client or httpx.Client(timeout=request_timeout_seconds)
 
     def generate(self, prompt: ImagePromptOption, index: int, *, task_id: str | None = None) -> ImageResultOption:
-        response = self.client.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent",
-            headers={"x-goog-api-key": self.api_key},
-            json={"contents": [{"parts": [{"text": _prompt_text(prompt)}]}]},
-        )
-        response.raise_for_status()
-        parts = response.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        try:
+            response = self.client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent",
+                headers={"x-goog-api-key": self.api_key},
+                json={"contents": [{"parts": [{"text": _prompt_text(prompt)}]}]},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise AdapterTransportError("Google AI 图片服务暂不可用，请稍后重试。") from error
+        try:
+            parts = response.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        except (AttributeError, IndexError, TypeError, ValueError) as error:
+            raise AdapterResponseError("Google AI response has no inline image") from error
         inline = next((part.get("inlineData") for part in parts if part.get("inlineData")), None)
         if not inline or not inline.get("data"):
-            raise RuntimeError("Google AI response has no inline image")
+            raise AdapterResponseError("Google AI response has no inline image")
         suffix = _extension_for_content_type(inline.get("mimeType", "image/png"))
         local_url = persist_bytes(base64.b64decode(inline["data"]), self.upload_dir, suffix, task_id=task_id)
         return _generated_result(prompt, local_url, "GOOGLE_AI")
@@ -449,7 +475,7 @@ def persist_remote_image(url: str, upload_dir: Path, client: httpx.Client, *, ta
         except (httpx.TransportError, httpx.HTTPStatusError) as error:
             status = error.response.status_code if isinstance(error, httpx.HTTPStatusError) and error.response else None
             if attempt or status not in {None, 429, 500, 502, 503, 504}:
-                raise
+                raise AdapterTransportError("图片资源下载服务暂不可用，请稍后重试。") from error
             time.sleep(0.2)
     return persist_bytes(image.content, upload_dir, _extension_for_content_type(image.content_type), task_id=task_id)
 
@@ -467,10 +493,10 @@ def _task_upload_location(upload_dir: Path, task_id: str | None) -> tuple[Path, 
     if task_id is None:
         return root, "/uploads/images"
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", task_id):
-        raise ValueError("任务图片目录不合法")
+        raise WorkflowValidationError("任务图片目录不合法")
     target = (root / task_id).resolve()
     if not target.is_relative_to(root):
-        raise ValueError("任务图片目录不合法")
+        raise WorkflowValidationError("任务图片目录不合法")
     return target, f"/uploads/images/{task_id}"
 
 

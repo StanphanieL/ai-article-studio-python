@@ -20,8 +20,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from .anchors import heading_key, image_anchor_excerpt, markdown_anchor_sections
 from .composition import compose_article
 from .config import Settings
+from .contracts import ArticleAgent
+from .domain import (
+    WorkflowBusyError,
+    WorkflowCancellationRequested,
+    WorkflowExecutionError,
+    WorkflowOperation,
+    WorkflowValidationError,
+)
 from .exports import ArticleExporter, ExportFile
-from .llm import ArticleAgent
 from .models import AgentLog, Article
 from .providers import ImageGenerationService, calculate_image_count
 from .quality import content_contract_issues, factuality_contract_issues, is_quality_gate_issue
@@ -83,14 +90,6 @@ _QUERY_SECRET_PATTERN = re.compile(
 )
 
 
-class WorkflowBusyError(RuntimeError):
-    """Raised when a foreground mutation races an active background workflow job."""
-
-
-class WorkflowCancellationRequested(RuntimeError):
-    """Internal control flow used to stop an in-flight task at a safe boundary."""
-
-
 class ArticleWorkflow:
     def __init__(
         self,
@@ -135,7 +134,7 @@ class ArticleWorkflow:
     def create(self, topic: str, style: str = "TECH", config: ArticleModelConfig | None = None) -> str:
         normalized_topic = topic.strip()
         if not normalized_topic:
-            raise ValueError("选题不能为空")
+            raise WorkflowValidationError("选题不能为空")
         model_config = config or ArticleModelConfig(text_model=self.settings.openai_model)
         with self.sessions() as session:
             task_id = uuid.uuid4().hex
@@ -185,7 +184,7 @@ class ArticleWorkflow:
                     else self._get_article(session, task_id)
                 )
                 if not article:
-                    raise ValueError("文章任务不存在")
+                    raise WorkflowValidationError("文章任务不存在")
                 local_paths = self._local_image_paths(article.image_results)
                 referenced_paths = self._referenced_local_image_paths(session, excluding_task_id=task_id)
                 session.execute(delete(AgentLog).where(AgentLog.task_id == task_id))
@@ -234,7 +233,7 @@ class ArticleWorkflow:
     def confirm_title(self, task_id: str, selected_title: str) -> Article:
         normalized_title = selected_title.strip()
         if not normalized_title:
-            raise ValueError("请选择或填写标题")
+            raise WorkflowValidationError("请选择或填写标题")
         with self.task_write_lock(task_id):
             with self.sessions() as session:
                 article = self._get_article(session, task_id)
@@ -309,7 +308,7 @@ class ArticleWorkflow:
                 article = self._get_article(session, task_id)
                 self._ensure_article_writable(article)
                 if not article.selected_title or not self._outline(article):
-                    raise ValueError("请先确认标题并生成大纲")
+                    raise WorkflowValidationError("请先确认标题并生成大纲")
                 article.status = ArticleStatus.RUNNING.value
                 article.supervisor_action = SupervisorAction.GENERATE_CONTENT.value
                 article.supervisor_reason = "正在生成正文"
@@ -330,9 +329,9 @@ class ArticleWorkflow:
                     article = self._get_article(session, task_id)
                     outline = self._outline(article)
                     if article.status != ArticleStatus.RUNNING.value:
-                        raise ValueError("请先启动流式正文生成")
+                        raise WorkflowValidationError("请先启动流式正文生成")
                     if not article.selected_title or not outline:
-                        raise ValueError("请先确认标题并生成大纲")
+                        raise WorkflowValidationError("请先确认标题并生成大纲")
                     config = self._config(article)
                     agent = self._agent_for(article)
                     chunks: list[str] = []
@@ -452,7 +451,7 @@ class ArticleWorkflow:
                 self._ensure_article_writable(article)
                 prompts = self._prompts(article)
                 if index < 0 or index >= len(prompts):
-                    raise ValueError("图片编排索引不存在")
+                    raise WorkflowValidationError("图片编排索引不存在")
                 previous_plan = prompts[index]
                 # The anchor excerpt is internal evidence, not an editable
                 # page field. Recompute it from the stored article whenever a
@@ -468,7 +467,7 @@ class ArticleWorkflow:
 
                 results = self._images(article)
                 if results and len(results) != len(prompts):
-                    raise ValueError("图片结果与配图方案数量不一致，请重新生成图片后再编辑。")
+                    raise WorkflowValidationError("图片结果与配图方案数量不一致，请重新生成图片后再编辑。")
                 if visual_change:
                     article.image_results = None
                     next_action = SupervisorAction.GENERATE_IMAGE_RESULTS.value
@@ -508,10 +507,10 @@ class ArticleWorkflow:
                 prompts = self._prompts(article)
                 expected_indices = set(range(len(prompts)))
                 if len(indices) != len(prompts) or set(indices) != expected_indices:
-                    raise ValueError("图片排序必须包含每一张配图且不得重复")
+                    raise WorkflowValidationError("图片排序必须包含每一张配图且不得重复")
                 results = self._images(article)
                 if results and len(results) != len(prompts):
-                    raise ValueError("图片结果与配图方案数量不一致，请重新生成图片后再排序。")
+                    raise WorkflowValidationError("图片结果与配图方案数量不一致，请重新生成图片后再排序。")
 
                 reordered_prompts = [prompts[index] for index in indices]
                 self._validate_image_plan_contract(article.content or "", reordered_prompts)
@@ -564,14 +563,15 @@ class ArticleWorkflow:
     def execute_action(self, task_id: str, action: str, provider: ImageProvider = ImageProvider.AUTO) -> Article:
         """Run a persisted supervisor action, including a failed job's retry action."""
 
-        persisted_action = action
-        provider = self.provider_for_action(action, provider)
-        action = self.public_action(action) or ""
+        persisted_operation = WorkflowOperation.parse(action)
+        persisted_action = persisted_operation.encode()
+        provider = self.provider_for_action(persisted_action, provider)
+        action = persisted_operation.action
         index: int | None = None
         raw_action, separator, raw_index = action.partition(":")
         if raw_action == "REGENERATE_IMAGE_RESULT":
             if not separator or not raw_index.isdigit():
-                raise ValueError("图片重试动作不合法")
+                raise WorkflowValidationError("图片重试动作不合法")
             index = int(raw_index)
         if raw_action == "ONE_CLICK_GENERATE":
             return self.one_click(task_id)
@@ -583,7 +583,7 @@ class ArticleWorkflow:
         try:
             supervisor_action = SupervisorAction(raw_action)
         except ValueError as error:
-            raise ValueError("当前任务动作不支持执行") from error
+            raise WorkflowValidationError("当前任务动作不支持执行") from error
         self._mark_current_action(task_id, persisted_action)
         if supervisor_action is SupervisorAction.GENERATE_TITLES:
             return self.generate_titles(task_id)
@@ -607,7 +607,7 @@ class ArticleWorkflow:
         }:
             decision = self.next_decision(task_id)
             return self._record_decision(task_id, decision.action.value, decision.reason)
-        raise ValueError("当前任务动作不支持执行")
+        raise WorkflowValidationError("当前任务动作不支持执行")
 
     def begin_job(
         self,
@@ -620,7 +620,7 @@ class ArticleWorkflow:
             with self.sessions() as session:
                 article = self._get_article(session, task_id)
                 if article.status in {ArticleStatus.QUEUED.value, ArticleStatus.RUNNING.value}:
-                    raise RuntimeError("任务正在执行中，请等待完成后再试")
+                    raise WorkflowExecutionError("任务正在执行中，请等待完成后再试")
                 article.status = ArticleStatus.QUEUED.value
                 article.supervisor_action = action
                 article.supervisor_reason = message
@@ -801,21 +801,21 @@ class ArticleWorkflow:
         action_name = action.partition(":")[0]
         if provider is ImageProvider.AUTO or action_name not in _IMAGE_ACTIONS:
             return action
-        return f"{action}{_ACTION_PROVIDER_SEPARATOR}{provider.value}"
+        return WorkflowOperation(action=action, provider=provider.value).encode()
 
     @staticmethod
     def public_action(action: str | None) -> str | None:
-        return action.partition(_ACTION_PROVIDER_SEPARATOR)[0] if action else None
+        return WorkflowOperation.parse(action).action if action else None
 
     @staticmethod
     def provider_for_action(action: str, fallback: ImageProvider = ImageProvider.AUTO) -> ImageProvider:
-        _base_action, separator, raw_provider = action.partition(_ACTION_PROVIDER_SEPARATOR)
-        if not separator:
+        operation = WorkflowOperation.parse(action)
+        if operation.provider is None:
             return fallback
         try:
-            return ImageProvider(raw_provider)
+            return ImageProvider(operation.provider)
         except ValueError as error:
-            raise ValueError("图片任务中的供应商信息不合法") from error
+            raise WorkflowValidationError("图片任务中的供应商信息不合法") from error
 
     def ensure_not_busy(self, task_id: str) -> None:
         with self.task_write_lock(task_id):
@@ -851,7 +851,7 @@ class ArticleWorkflow:
         elif decision.action is SupervisorAction.REGENERATE_IMAGE_RESULTS:
             self.generate_image_results(task_id, ImageProvider.AUTO)
         else:  # Defensive guard against future supervisor actions.
-            raise RuntimeError(f"unsupported review revision: {decision.action}")
+            raise WorkflowExecutionError(f"unsupported review revision: {decision.action}")
         return self.one_click(task_id)
 
     def one_click(self, task_id: str) -> Article:
@@ -872,17 +872,17 @@ class ArticleWorkflow:
                         return self._update(task_id, status=ArticleStatus.SUCCESS.value)
                     return article
                 if article.status == ArticleStatus.FAILED.value:
-                    raise RuntimeError("任务已失败，请通过后台重试继续一键生成")
+                    raise WorkflowExecutionError("任务已失败，请通过后台重试继续一键生成")
                 if article.phase == ArticlePhase.TITLE_SELECTION.value and not article.selected_title:
                     titles = self._titles(article)
                     if not titles:
-                        raise RuntimeError("标题候选为空")
+                        raise WorkflowExecutionError("标题候选为空")
                     self.confirm_title(task_id, titles[0].title)
                     continue
                 updated = self.continue_workflow(task_id)
                 if updated.supervisor_action in {SupervisorAction.MANUAL_REVIEW.value, SupervisorAction.WAIT_FOR_TITLE.value}:
                     return updated
-            raise RuntimeError("一键生成超过最大步骤数")
+            raise WorkflowExecutionError("一键生成超过最大步骤数")
 
     def one_click_initial_action(self, task_id: str) -> str:
         """Return the first concrete action users should see for a one-click run."""
@@ -962,7 +962,7 @@ class ArticleWorkflow:
             if not factuality_contract_issues(f"{item.title}\n{item.reason}")
         ]
         if not titles:
-            raise ValueError("生成的标题包含不可核验的资源或背书，请重试生成标题。")
+            raise WorkflowValidationError("生成的标题包含不可核验的资源或背书，请重试生成标题。")
         article.title_options = json.dumps([item.model_dump(by_alias=True) for item in titles], ensure_ascii=False)
         article.phase = ArticlePhase.TITLE_SELECTION.value
         article.status = ArticleStatus.SUCCESS.value
@@ -970,12 +970,12 @@ class ArticleWorkflow:
 
     def _generate_outline(self, article: Article) -> str:
         if not article.selected_title:
-            raise ValueError("请先确认标题")
+            raise WorkflowValidationError("请先确认标题")
         agent = self._agent_for(article)
         outline = agent.outline(article.topic, article.selected_title, article.style)
         outline_issues = factuality_contract_issues("\n".join(f"{item.heading}\n{item.description}" for item in outline))
         if outline_issues:
-            raise ValueError("生成的大纲未通过事实与资源检查：" + "；".join(outline_issues))
+            raise WorkflowValidationError("生成的大纲未通过事实与资源检查：" + "；".join(outline_issues))
         article.outline = json.dumps([item.model_dump(by_alias=True) for item in outline], ensure_ascii=False)
         article.phase = ArticlePhase.OUTLINE_EDITING.value
         article.status = ArticleStatus.SUCCESS.value
@@ -983,7 +983,7 @@ class ArticleWorkflow:
 
     def _generate_content(self, article: Article) -> str:
         if not article.selected_title or not self._outline(article):
-            raise ValueError("请先确认标题并生成大纲")
+            raise WorkflowValidationError("请先确认标题并生成大纲")
         config = self._config(article)
         agent = self._agent_for(article)
         candidate = agent.content(
@@ -999,7 +999,7 @@ class ArticleWorkflow:
 
     def _generate_image_prompts(self, article: Article) -> str:
         if not article.content or not article.selected_title:
-            raise ValueError("请先生成正文")
+            raise WorkflowValidationError("请先生成正文")
         config = self._config(article)
         count = config.image_count if config.image_count_mode is ImageCountMode.CUSTOM else calculate_image_count(article.content)
         prompts = self._agent_for(article).image_prompts(article.topic, article.selected_title, article.content, article.style, count or 3)
@@ -1026,7 +1026,7 @@ class ArticleWorkflow:
             raw_prompts = self._prompts(article)
             prompts = [self._with_anchor_excerpt(article.content or "", prompt) for prompt in raw_prompts]
             if not prompts:
-                raise ValueError("请先生成图片提示词")
+                raise WorkflowValidationError("请先生成图片提示词")
             if prompts != raw_prompts:
                 # Existing task records predate anchor excerpts. Upgrade them
                 # lazily at the safe pre-generation boundary so retrying an
@@ -1035,7 +1035,7 @@ class ArticleWorkflow:
                 self._update(task_id, image_prompts=self._dump_image_records(prompts))
             results = self._images(article)
             if len(results) > len(prompts):
-                raise ValueError("图片结果数量异常，请重新生成图片素材")
+                raise WorkflowValidationError("图片结果数量异常，请重新生成图片素材")
 
             config = self._config(article)
             if requested_provider is ImageProvider.AUTO and config.image_provider is not ImageProvider.AUTO:
@@ -1136,9 +1136,9 @@ class ArticleWorkflow:
         if prompts != raw_prompts:
             article.image_prompts = self._dump_image_records(prompts)
         if index < 0 or index >= len(prompts) or len(results) > len(prompts):
-            raise ValueError("图片索引或图片数据不合法")
+            raise WorkflowValidationError("图片索引或图片数据不合法")
         if index > len(results):
-            raise ValueError("请先重试前一张未完成的图片")
+            raise WorkflowValidationError("请先重试前一张未完成的图片")
         generated = self._generate_image_for_task(prompts[index], provider, index, article.task_id)
         if index == len(results):
             results.append(generated)
@@ -1158,11 +1158,11 @@ class ArticleWorkflow:
 
         prompts, results = self._prompts(article), self._images(article)
         if len(prompts) != len(results):
-            raise ValueError("图片结果与配图方案数量不一致，无法执行视觉质检")
+            raise WorkflowValidationError("图片结果与配图方案数量不一致，无法执行视觉质检")
         selected_indices = indices if indices is not None else list(range(len(results)))
         for index in selected_indices:
             if index < 0 or index >= len(results):
-                raise ValueError("图片索引不存在，无法执行视觉质检")
+                raise WorkflowValidationError("图片索引不存在，无法执行视觉质检")
             results[index] = results[index].model_copy(
                 update={"visual_review": self._safe_visual_review(results[index], prompts[index])}
             )
@@ -1192,7 +1192,7 @@ class ArticleWorkflow:
 
     def _review(self, article: Article) -> str:
         if not article.final_markdown:
-            raise ValueError("请先生成最终图文稿")
+            raise WorkflowValidationError("请先生成最终图文稿")
         result = self._agent_for(article).review(article.final_markdown)
         blocking_issues = list(
             dict.fromkeys(
@@ -1494,12 +1494,12 @@ class ArticleWorkflow:
         """Reject stale or impossible editor anchors before persisting them."""
 
         if not content.strip():
-            raise ValueError("请先生成正文，再调整图片位置")
+            raise WorkflowValidationError("请先生成正文，再调整图片位置")
         anchor_heading = plan.anchor_heading.strip()
         placement = plan.placement
         if placement in {ImagePlacement.COVER, ImagePlacement.AFTER_INTRO}:
             if anchor_heading or plan.anchor_paragraph:
-                raise ValueError("封面或导语后的配图不能指定章节或段落锚点")
+                raise WorkflowValidationError("封面或导语后的配图不能指定章节或段落锚点")
             return
 
         sections = ArticleWorkflow._markdown_sections(content)
@@ -1508,41 +1508,41 @@ class ArticleWorkflow:
             None,
         )
         if matching is None:
-            raise ValueError(f"未找到锚点标题：{anchor_heading or '（未填写）'}")
+            raise WorkflowValidationError(f"未找到锚点标题：{anchor_heading or '（未填写）'}")
         _heading, blocks = matching
         if placement is ImagePlacement.AFTER_PARAGRAPH:
             if not 1 <= plan.anchor_paragraph <= len(blocks):
-                raise ValueError(f"锚点段落无效：标题“{anchor_heading}”下共有 {len(blocks)} 段，不能定位第 {plan.anchor_paragraph} 段")
+                raise WorkflowValidationError(f"锚点段落无效：标题“{anchor_heading}”下共有 {len(blocks)} 段，不能定位第 {plan.anchor_paragraph} 段")
             return
         if plan.anchor_paragraph != 0:
-            raise ValueError("章节末尾配图的段落序号必须为 0")
+            raise WorkflowValidationError("章节末尾配图的段落序号必须为 0")
 
     @staticmethod
     def _validate_image_plan_contract(content: str, plans: list[ImagePromptOption]) -> None:
         """Keep generated and manually arranged plans structurally composable."""
 
         if not plans:
-            raise ValueError("配图方案不能为空")
+            raise WorkflowValidationError("配图方案不能为空")
         for plan in plans:
             ArticleWorkflow._validate_image_plan_anchor(content, plan)
 
         cover_indices = [index for index, plan in enumerate(plans) if plan.visual_role is ImageVisualRole.COVER]
         if len(cover_indices) != 1:
-            raise ValueError("配图方案必须且只能包含一张封面图")
+            raise WorkflowValidationError("配图方案必须且只能包含一张封面图")
         if cover_indices[0] != 0:
-            raise ValueError("封面图必须位于配图方案第 1 项")
+            raise WorkflowValidationError("封面图必须位于配图方案第 1 项")
         if plans[0].placement is not ImagePlacement.COVER or any(
             plan.placement is ImagePlacement.COVER for plan in plans[1:]
         ):
-            raise ValueError("封面图必须使用 COVER 位置，且其他配图不能使用 COVER 位置")
+            raise WorkflowValidationError("封面图必须使用 COVER 位置，且其他配图不能使用 COVER 位置")
 
         roles = [plan.visual_role for plan in plans]
         if len(set(roles)) != len(roles):
-            raise ValueError("同一配图方案中的视觉角色不能重复")
+            raise WorkflowValidationError("同一配图方案中的视觉角色不能重复")
 
         for previous, current in zip(plans, plans[1:]):
             if ArticleWorkflow._image_anchor_key(previous) == ArticleWorkflow._image_anchor_key(current):
-                raise ValueError("相邻配图不能使用同一锚点")
+                raise WorkflowValidationError("相邻配图不能使用同一锚点")
 
     @staticmethod
     def _image_anchor_key(plan: ImagePromptOption) -> str:
@@ -1655,7 +1655,7 @@ class ArticleWorkflow:
     def _get_article(session: Session, task_id: str) -> Article:
         article = session.scalar(select(Article).where(Article.task_id == task_id, Article.is_deleted == 0))
         if not article:
-            raise ValueError("文章任务不存在")
+            raise WorkflowValidationError("文章任务不存在")
         return article
 
     @staticmethod
@@ -1710,7 +1710,7 @@ class ArticleWorkflow:
     def _raise_for_content_contract(self, article: Article, content: str) -> None:
         issues = self._content_contract(article, content)
         if issues:
-            raise ValueError("正文未通过内容质量检查：" + "；".join(issues))
+            raise WorkflowValidationError("正文未通过内容质量检查：" + "；".join(issues))
 
     def _validated_generated_content(self, article: Article, candidate: str, agent: ArticleAgent) -> tuple[str, bool]:
         normalized_candidate = candidate.strip()
@@ -1719,7 +1719,7 @@ class ArticleWorkflow:
             return normalized_candidate, False
         repair = getattr(agent, "repair_content", None)
         if not callable(repair):
-            raise ValueError("正文未通过内容质量检查，且当前模型不支持自动修订：" + "；".join(issues))
+            raise WorkflowValidationError("正文未通过内容质量检查，且当前模型不支持自动修订：" + "；".join(issues))
         repaired = repair(
             article.topic,
             article.selected_title or article.topic,
@@ -1730,7 +1730,7 @@ class ArticleWorkflow:
             issues,
         )
         if not isinstance(repaired, str) or not repaired.strip():
-            raise ValueError("正文自动修订未返回有效内容")
+            raise WorkflowValidationError("正文自动修订未返回有效内容")
         self._raise_for_content_contract(article, repaired.strip())
         return repaired.strip(), True
 
@@ -1757,7 +1757,7 @@ class ArticleWorkflow:
     @staticmethod
     def _require_final_markdown(article: Article) -> None:
         if not article.final_markdown:
-            raise ValueError("请先完成图文稿合成后再导出")
+            raise WorkflowValidationError("请先完成图文稿合成后再导出")
 
 
 def _sse(event: str, payload: dict[str, object]) -> str:

@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Iterator
-from typing import Protocol, TypeVar
+from typing import TypeVar
 
 import httpx
 from pydantic import ValidationError
 
 from .anchors import image_anchor_catalog, image_visual_brief_catalog
 from .config import Settings
+from .contracts import ArticleAgent
+from .domain import AdapterConfigurationError, AdapterResponseError, AdapterTransportError
 from .schemas import (
     ArticleModelConfig,
     ImageLayout,
@@ -24,31 +26,6 @@ from .schemas import (
 )
 
 ValidatedJson = TypeVar("ValidatedJson")
-
-
-class ArticleAgent(Protocol):
-    def titles(self, topic: str, style: str) -> list[TitleOption]: ...
-
-    def outline(self, topic: str, title: str, style: str) -> list[OutlineItem]: ...
-
-    def content(self, topic: str, title: str, outline: list[OutlineItem], style: str, length: str) -> str: ...
-
-    def repair_content(
-        self,
-        topic: str,
-        title: str,
-        outline: list[OutlineItem],
-        style: str,
-        length: str,
-        draft: str,
-        violations: list[str],
-    ) -> str: ...
-
-    def stream_content(self, topic: str, title: str, outline: list[OutlineItem], style: str, length: str) -> Iterator[str]: ...
-
-    def image_prompts(self, topic: str, title: str, content: str, style: str, count: int) -> list[ImagePromptOption]: ...
-
-    def review(self, article: str) -> QualityReviewResult: ...
 
 
 class MockArticleAgent:
@@ -164,7 +141,7 @@ class OpenAICompatibleArticleAgent(MockArticleAgent):
 
     def __init__(self, settings: Settings, model_config: ArticleModelConfig | None = None) -> None:
         if not settings.openai_api_key:
-            raise RuntimeError("LLM API key is not configured")
+            raise AdapterConfigurationError("LLM API key is not configured")
         self.settings = settings
         self.model_config = model_config or ArticleModelConfig(text_model=settings.openai_model)
         self.client = httpx.Client(timeout=settings.request_timeout_seconds)
@@ -186,15 +163,21 @@ class OpenAICompatibleArticleAgent(MockArticleAgent):
         }
 
     def _chat(self, prompt: str) -> str:
-        response = self.client.post(
-            _chat_completions_url(self.settings.openai_base_url),
-            headers={"Authorization": f"Bearer {self.settings.openai_api_key.get_secret_value()}"},
-            json=self._request_payload(prompt),
-        )
-        response.raise_for_status()
-        content = response.json().get("choices", [{}])[0].get("message", {}).get("content")
+        try:
+            response = self.client.post(
+                _chat_completions_url(self.settings.openai_base_url),
+                headers={"Authorization": f"Bearer {self.settings.openai_api_key.get_secret_value()}"},
+                json=self._request_payload(prompt),
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise AdapterTransportError("LLM 服务暂不可用，请稍后重试。") from error
+        try:
+            content = response.json().get("choices", [{}])[0].get("message", {}).get("content")
+        except (AttributeError, IndexError, TypeError, ValueError) as error:
+            raise AdapterResponseError("LLM response has no content") from error
         if not isinstance(content, str) or not content.strip():
-            raise RuntimeError("LLM response has no content")
+            raise AdapterResponseError("LLM response has no content")
         return content
 
     def _json(
@@ -222,25 +205,28 @@ class OpenAICompatibleArticleAgent(MockArticleAgent):
         length: str,
     ) -> Iterator[str]:
         prompt = _content_prompt(topic, title, outline, style, length)
-        with self.client.stream(
-            "POST",
-            _chat_completions_url(self.settings.openai_base_url),
-            headers={"Authorization": f"Bearer {self.settings.openai_api_key.get_secret_value()}"},
-            json=self._request_payload(prompt, stream=True),
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if not line.startswith("data:"):
-                    continue
-                payload = line.removeprefix("data:").strip()
-                if payload == "[DONE]":
-                    return
-                try:
-                    delta = json.loads(payload)["choices"][0]["delta"].get("content")
-                except (IndexError, KeyError, TypeError, json.JSONDecodeError):
-                    continue
-                if isinstance(delta, str) and delta:
-                    yield delta
+        try:
+            with self.client.stream(
+                "POST",
+                _chat_completions_url(self.settings.openai_base_url),
+                headers={"Authorization": f"Bearer {self.settings.openai_api_key.get_secret_value()}"},
+                json=self._request_payload(prompt, stream=True),
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line.removeprefix("data:").strip()
+                    if payload == "[DONE]":
+                        return
+                    try:
+                        delta = json.loads(payload)["choices"][0]["delta"].get("content")
+                    except (IndexError, KeyError, TypeError, json.JSONDecodeError):
+                        continue
+                    if isinstance(delta, str) and delta:
+                        yield delta
+        except httpx.HTTPError as error:
+            raise AdapterTransportError("LLM 服务暂不可用，请稍后重试。") from error
 
     def titles(self, topic: str, style: str) -> list[TitleOption]:
         return self._json(
