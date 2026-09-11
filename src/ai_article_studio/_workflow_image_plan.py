@@ -58,24 +58,18 @@ def normalize_generated_image_plan(
     for index, plan in enumerate(plans):
         original = plan
         if plan.placement is ImagePlacement.COVER:
-            plan = plan.model_copy(
-                update={"placement": ImagePlacement.COVER, "anchor_heading": "", "anchor_paragraph": 0}
-            )
+            plan = plan.model_copy(update={"placement": ImagePlacement.COVER, "anchor_heading": "", "anchor_paragraph": 0})
         elif plan.placement is ImagePlacement.AFTER_INTRO:
             plan = plan.model_copy(update={"anchor_heading": "", "anchor_paragraph": 0})
         else:
             section = by_key.get(heading_key(plan.anchor_heading))
             if section is None:
                 heading, paragraph, placement = choose_fallback({previous_anchor})
-                plan = plan.model_copy(
-                    update={"anchor_heading": heading, "anchor_paragraph": paragraph, "placement": placement}
-                )
+                plan = plan.model_copy(update={"anchor_heading": heading, "anchor_paragraph": paragraph, "placement": placement})
             elif plan.placement is ImagePlacement.AFTER_PARAGRAPH:
                 if section.paragraphs:
                     paragraph = min(max(plan.anchor_paragraph, 1), len(section.paragraphs))
-                    plan = plan.model_copy(
-                        update={"anchor_heading": section.heading, "anchor_paragraph": paragraph}
-                    )
+                    plan = plan.model_copy(update={"anchor_heading": section.heading, "anchor_paragraph": paragraph})
                 else:
                     plan = plan.model_copy(
                         update={
@@ -85,9 +79,7 @@ def normalize_generated_image_plan(
                         }
                     )
             else:
-                plan = plan.model_copy(
-                    update={"anchor_heading": section.heading, "anchor_paragraph": 0, "placement": ImagePlacement.SECTION_END}
-                )
+                plan = plan.model_copy(update={"anchor_heading": section.heading, "anchor_paragraph": 0, "placement": ImagePlacement.SECTION_END})
 
         if plan != original:
             adjusted_indices.add(index)
@@ -145,9 +137,7 @@ def replacement_visual_role(
     no useful hint.
     """
 
-    semantic_text = " ".join(
-        (plan.image_title, plan.usage_scene, plan.prompt_zh, plan.prompt_en)
-    ).casefold()
+    semantic_text = " ".join((plan.image_title, plan.usage_scene, plan.prompt_zh, plan.prompt_en)).casefold()
     preferred: list[ImageVisualRole] = []
 
     def add_if_matches(role: ImageVisualRole, keywords: tuple[str, ...]) -> None:
@@ -226,9 +216,7 @@ def validate_image_plan_contract(content: str, plans: list[ImagePromptOption]) -
         raise WorkflowValidationError("配图方案必须且只能包含一张封面图")
     if cover_indices[0] != 0:
         raise WorkflowValidationError("封面图必须位于配图方案第 1 项")
-    if plans[0].placement is not ImagePlacement.COVER or any(
-        plan.placement is ImagePlacement.COVER for plan in plans[1:]
-    ):
+    if plans[0].placement is not ImagePlacement.COVER or any(plan.placement is ImagePlacement.COVER for plan in plans[1:]):
         raise WorkflowValidationError("封面图必须使用 COVER 位置，且其他配图不能使用 COVER 位置")
 
     roles = [plan.visual_role for plan in plans]
@@ -261,4 +249,3 @@ def canonical_heading_key(value: str) -> str:
 
 def dump_image_records(records: list[ImagePromptOption] | list[ImageResultOption]) -> str:
     return json.dumps([record.model_dump(by_alias=True) for record in records], ensure_ascii=False)
-

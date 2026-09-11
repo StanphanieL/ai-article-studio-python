@@ -57,11 +57,7 @@ def test_configured_vision_review_sends_safe_image_data_uri_and_parses_result(tm
         captured["payload"] = json.loads(request.content)
         return httpx.Response(
             200,
-            json={
-                "choices": [
-                    {"message": {"content": json.dumps({"status": "PASSED", "score": 91, "issues": []})}}
-                ]
-            },
+            json={"choices": [{"message": {"content": json.dumps({"status": "PASSED", "score": 91, "issues": []})}}]},
             request=request,
         )
 

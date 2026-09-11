@@ -137,11 +137,7 @@ def test_job_start_is_immediate_rejects_duplicate_and_finishes(tmp_path: Path) -
         finished = client.get(f"/article/{task_id}/jobs/status")
 
     assert started.status_code == 202
-    assert {
-        key: value
-        for key, value in started.json()["data"].items()
-        if key not in {"startedAt", "elapsedSeconds"}
-    } == {
+    assert {key: value for key, value in started.json()["data"].items() if key not in {"startedAt", "elapsedSeconds"}} == {
         "taskId": task_id,
         "status": "QUEUED",
         "action": "GENERATE_TITLES",
@@ -514,11 +510,7 @@ def test_app_creation_recovers_interrupted_running_jobs(tmp_path: Path) -> None:
     with build_client(tmp_path, ManualExecutor()) as recovered_client:
         status = recovered_client.get(f"/article/{task_id}/jobs/status")
 
-    assert {
-        key: value
-        for key, value in status.json()["data"].items()
-        if key not in {"startedAt", "elapsedSeconds"}
-    } == {
+    assert {key: value for key, value in status.json()["data"].items() if key not in {"startedAt", "elapsedSeconds"}} == {
         "taskId": task_id,
         "status": "FAILED",
         "action": "GENERATE_TITLES",

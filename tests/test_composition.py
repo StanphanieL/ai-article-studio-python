@@ -178,7 +178,7 @@ def test_compose_escapes_hostile_image_metadata_before_emitting_markdown() -> No
     )
 
     assert "<" not in markdown
-    assert "class=\"" not in markdown
+    assert 'class="' not in markdown
     assert "javascript:" not in markdown
     assert "&lt;" in markdown
 
@@ -187,11 +187,7 @@ def test_reader_facing_markdown_hides_provider_codes_in_legacy_attribution() -> 
     from ai_article_studio.composition import reader_facing_markdown
 
     markdown = (
-        "> 示例说明 ｜ 来源：FALLBACK ｜ 作者：AI Article Studio placeholder\n\n"
-        "> 另一条说明 ｜ 来源：PEXELS ｜ 原图：[查看原图](https://example.test/source)"
+        "> 示例说明 ｜ 来源：FALLBACK ｜ 作者：AI Article Studio placeholder\n\n> 另一条说明 ｜ 来源：PEXELS ｜ 原图：[查看原图](https://example.test/source)"
     )
 
-    assert reader_facing_markdown(markdown) == (
-        "> 来源：示例图片 ｜ 作者：AI Article Studio\n\n"
-        "> 来源：[Pexels 图库](https://example.test/source)"
-    )
+    assert reader_facing_markdown(markdown) == ("> 来源：示例图片 ｜ 作者：AI Article Studio\n\n> 来源：[Pexels 图库](https://example.test/source)")

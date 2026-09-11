@@ -67,9 +67,7 @@ def test_auto_prefers_siliconflow_for_a_technical_diagram() -> None:
             ImageProvider.MOCK: StubProvider("MOCK"),
         }
     )
-    technical_prompt = prompt().model_copy(
-        update={"usage_scene": "前端架构流程图", "prompt_en": "UI architecture flow diagram with code"}
-    )
+    technical_prompt = prompt().model_copy(update={"usage_scene": "前端架构流程图", "prompt_en": "UI architecture flow diagram with code"})
 
     result = service.generate_one(technical_prompt, ImageProvider.AUTO, 0)
 
@@ -420,9 +418,7 @@ def test_pexels_provider_uses_the_planned_english_stock_query() -> None:
             request=request,
         )
 
-    planned_prompt = prompt().model_copy(
-        update={"image_title": "中文标题不会用于检索", "stock_query": "designer workspace"}
-    )
+    planned_prompt = prompt().model_copy(update={"image_title": "中文标题不会用于检索", "stock_query": "designer workspace"})
     result = PexelsImageProvider("key", httpx.Client(transport=httpx.MockTransport(handler))).generate(planned_prompt, 0)
 
     assert result.source == "PEXELS"
@@ -544,9 +540,7 @@ def test_auto_scene_role_prefers_pexels_even_when_its_prompt_mentions_an_interfa
             ImageProvider.MOCK: StubProvider("MOCK"),
         }
     )
-    scene_prompt = prompt().model_copy(
-        update={"visual_role": "SCENE", "usage_scene": "人物使用 UI 界面", "prompt_en": "designer at code interface"}
-    )
+    scene_prompt = prompt().model_copy(update={"visual_role": "SCENE", "usage_scene": "人物使用 UI 界面", "prompt_en": "designer at code interface"})
 
     result = service.generate_one(scene_prompt, ImageProvider.AUTO, 0)
 
@@ -563,11 +557,7 @@ def test_google_provider_uses_header_for_key_and_persists_inline_image(tmp_path)
         assert "key" not in request.url.params
         return httpx.Response(
             200,
-            json={
-                "candidates": [
-                    {"content": {"parts": [{"inlineData": {"mimeType": "image/png", "data": "aW1hZ2U="}}]}}
-                ]
-            },
+            json={"candidates": [{"content": {"parts": [{"inlineData": {"mimeType": "image/png", "data": "aW1hZ2U="}}]}}]},
             request=request,
         )
 

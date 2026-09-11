@@ -144,11 +144,11 @@ def test_image_stage_defaults_to_a_compact_delivery_view_with_collapsed_advanced
         ).json()["data"]
         page = client.get(f"/article/detail/{article['taskId']}?step=images")
 
-    assert 'data-image-storyboard' in page.text
-    assert 'data-image-plan-card' in page.text
-    assert 'data-image-plan-form' in page.text
+    assert "data-image-storyboard" in page.text
+    assert "data-image-plan-card" in page.text
+    assert "data-image-plan-form" in page.text
     assert '<details class="image-plan-editor">' in page.text
-    assert '<summary>编辑配图</summary>' in page.text
+    assert "<summary>编辑配图</summary>" in page.text
     assert 'class="image-placement-summary"' in page.text
     assert 'class="image-source-summary"' in page.text
     assert 'name="visualRole"' in page.text
@@ -162,19 +162,19 @@ def test_image_stage_defaults_to_a_compact_delivery_view_with_collapsed_advanced
     assert 'data-image-fixed="true"' in page.text
     assert 'draggable="false"' in page.text
     assert '<details class="image-generation-details">' not in page.text
-    assert 'data-image-visual-review' not in page.text
+    assert "data-image-visual-review" not in page.text
 
 
 def test_image_storyboard_script_persists_drag_or_keyboard_reordering() -> None:
     script = (Path(__file__).parents[1] / "src" / "ai_article_studio" / "static" / "stream.js").read_text(encoding="utf-8")
 
-    assert 'data-image-plan-form' in script
-    assert 'data-image-storyboard' in script
-    assert 'dragstart' in script
-    assert 'drop' in script
-    assert 'data-image-move' in script
-    assert 'isFixedCard' in script
-    assert 'dataset.reorderUrl' in script
+    assert "data-image-plan-form" in script
+    assert "data-image-storyboard" in script
+    assert "dragstart" in script
+    assert "drop" in script
+    assert "data-image-move" in script
+    assert "isFixedCard" in script
+    assert "dataset.reorderUrl" in script
 
 
 def test_image_storyboard_styles_vary_figure_layouts_and_work_on_small_screens() -> None:
@@ -192,13 +192,13 @@ def test_detail_template_defines_a_five_step_card_wizard_shell() -> None:
 
     template = (Path(__file__).parents[1] / "src/ai_article_studio/templates/detail.html").read_text(encoding="utf-8")
 
-    assert 'data-wizard-progress' in template
+    assert "data-wizard-progress" in template
     assert 'data-step-card="title"' in template
     assert 'data-step-card="outline"' in template
     assert 'data-step-card="content"' in template
     assert 'data-step-card="images"' in template
     assert 'data-step-card="delivery"' in template
-    assert 'data-change-title' in template
+    assert "data-change-title" in template
     assert 'class="workspace-tools"' not in template
 
 
@@ -218,7 +218,7 @@ def test_creation_page_owns_settings_without_repeating_implementation_metadata_i
 
     assert 'id="new-article"' in list_template
     assert '<details class="create-settings" aria-label="创作设置">' in list_template
-    assert '<summary>创作设置</summary>' in list_template
+    assert "<summary>创作设置</summary>" in list_template
     assert "将随这篇文章保存" not in list_template
     assert 'name="text_model"' in list_template
     assert 'name="content_length_level"' in list_template
@@ -240,7 +240,7 @@ def test_homepage_is_a_create_first_editorial_surface_without_changing_form_cont
     assert 'class="home-page"' in template
     assert 'class="home-hero"' in template
     assert '<h1 id="home-title"><span class="home-title-lead">把一个想法</span><span class="home-title-main">写成完整图文稿</span></h1>' in template
-    assert '完整图文稿。' not in template
+    assert "完整图文稿。" not in template
     assert 'class="home-flow" aria-label="创作流程"' in template
     assert 'class="create-card home-create-card"' in template
     assert 'class="task-grid home-task-grid"' in template
@@ -248,8 +248,8 @@ def test_homepage_is_a_create_first_editorial_surface_without_changing_form_cont
     assert 'class="task-card-topic"' in template
     assert 'name="mode" value="step"' in template
     assert 'name="mode" value="one_click"' in template
-    assert 'data-create-form' in template
-    assert 'data-delete-form' in template
+    assert "data-create-form" in template
+    assert "data-delete-form" in template
     assert ".home-hero" in stylesheet
     assert ".home-title-lead" in stylesheet
     assert ".home-title-main" in stylesheet
@@ -331,10 +331,7 @@ def test_page_delete_permanently_removes_task_logs_and_local_images(tmp_path: Pa
             json={"topic": "删除页面任务", "config": {"imageProvider": "MOCK"}},
         ).json()["data"]
         task_id = article["taskId"]
-        image_paths = [
-            tmp_path / "images" / image["imageUrl"].removeprefix("/uploads/images/")
-            for image in json.loads(article["imageResults"])
-        ]
+        image_paths = [tmp_path / "images" / image["imageUrl"].removeprefix("/uploads/images/") for image in json.loads(article["imageResults"])]
         assert all(path.exists() for path in image_paths)
         deleted = client.post(
             f"/article/{task_id}/delete",
@@ -432,8 +429,8 @@ def test_running_task_offers_irreversible_cancellation_and_permanent_deletion(tm
         )
 
     assert 'data-task-id="' + task_id + '"' in list_page.text
-    assert 'data-delete-form' in list_page.text
-    assert 'data-delete-disabled' not in list_page.text
+    assert "data-delete-form" in list_page.text
+    assert "data-delete-disabled" not in list_page.text
     assert "取消生成并清除文章" in list_page.text
     assert "无法恢复" in list_page.text
     assert deleted.status_code == 202
@@ -484,13 +481,13 @@ def test_task_list_maps_running_completed_waiting_and_attention_states(tmp_path:
 def test_task_list_keeps_delete_form_outside_detail_link_and_delete_script_is_async() -> None:
     template = (Path(__file__).parents[1] / "src/ai_article_studio/templates/list.html").read_text(encoding="utf-8")
     script = (Path(__file__).parents[1] / "src/ai_article_studio/static/stream.js").read_text(encoding="utf-8")
-    delete_handler = script[script.index('selectAll("form[data-delete-form]")'):]
+    delete_handler = script[script.index('selectAll("form[data-delete-form]")') :]
     link_start = template.index('<a class="task-card-link"')
-    detail_link = template[link_start:template.index("</a>", link_start)]
+    detail_link = template[link_start : template.index("</a>", link_start)]
 
     assert '<form class="task-card-delete"' not in detail_link
-    assert 'data-delete-form' in template
-    assert 'data-delete-error' in template
+    assert "data-delete-form" in template
+    assert "data-delete-error" in template
     assert "window.confirm" in delete_handler
     assert 'headers: { Accept: "application/json" }' in delete_handler
     assert "window.location.reload()" in delete_handler
@@ -515,30 +512,26 @@ def test_title_choice_has_immediate_feedback_and_outline_save_becomes_dirty_only
         )
         after_save = client.get(saved.headers["location"])
 
-    assert 'data-title-confirm-form' in title_page.text
+    assert "data-title-confirm-form" in title_page.text
     assert 'aria-live="polite"' in title_page.text
     assert "文章标题" in title_page.text
     assert "选择后将进入大纲步骤" not in title_page.text
     assert "自动生成大纲" not in title_page.text
-    assert 'data-title-error' in title_page.text
+    assert "data-title-error" in title_page.text
     assert 'data-outline-confirmation="required"' in outline_page.text
     assert saved.status_code == 303
     assert saved.headers["location"].endswith("?step=content#content-stage")
     assert 'data-step-card="content"' in after_save.text
-    assert 'data-outline-editor' not in after_save.text
+    assert "data-outline-editor" not in after_save.text
 
 
 def test_async_forms_capture_values_before_disabling_controls() -> None:
     """Required form values must survive the busy UI state."""
 
     script = (Path(__file__).parents[1] / "src/ai_article_studio/static/stream.js").read_text(encoding="utf-8")
-    job_handler = script[script.index("const startJob"): script.index('selectAll("form[data-pending-form]")')]
-    title_handler = script[
-        script.index('selectAll("form[data-title-confirm-form]")'): script.index('selectAll("form[data-job-form]")')
-    ]
-    create_handler = script[
-        script.index('selectAll("form[data-create-form]")'): script.index('selectAll("form[data-delete-form]")')
-    ]
+    job_handler = script[script.index("const startJob") : script.index('selectAll("form[data-pending-form]")')]
+    title_handler = script[script.index('selectAll("form[data-title-confirm-form]")') : script.index('selectAll("form[data-job-form]")')]
+    create_handler = script[script.index('selectAll("form[data-create-form]")') : script.index('selectAll("form[data-delete-form]")')]
 
     assert job_handler.index("const formData = new FormData(form);") < job_handler.index("setDisabled(jobControls(), true);")
     assert title_handler.index("const formData = new FormData(form);") < title_handler.index("setDisabled(controls, true);")
@@ -568,7 +561,7 @@ def test_page_uses_precise_background_job_ctas_and_explicit_image_job(tmp_path: 
     assert "继续生成素材" not in after_title.text
     assert f'data-job-url="/article/{task_id}/jobs/images"' in image_page.text
     assert f'data-job-status-url="/article/{task_id}/jobs/status"' in image_page.text
-    assert 'data-image-generation-form' in image_page.text
+    assert "data-image-generation-form" in image_page.text
 
 
 def test_one_click_page_creation_starts_a_server_side_background_job(tmp_path: Path) -> None:
@@ -626,7 +619,7 @@ def test_completed_task_defaults_to_a_single_delivery_card(tmp_path: Path) -> No
     assert 'data-step-card="title"' not in page.text
     assert 'data-step-card="outline"' not in page.text
     assert 'data-step-card="content"' not in page.text
-    assert 'data-final-preview' in page.text
+    assert "data-final-preview" in page.text
     assert "查看最终 Markdown 源码" not in page.text
 
 
@@ -655,12 +648,12 @@ def test_blocked_review_prioritizes_blockers_in_the_repair_card(tmp_path: Path) 
         )
         page = client.get(f"/article/detail/{article['taskId']}")
 
-    assert 'data-review-blockers' in page.text
+    assert "data-review-blockers" in page.text
     assert "阻断交付问题" in page.text
     assert "代码围栏未闭合" in page.text
     assert 'data-step-card="content"' in page.text
     assert 'data-step-card="delivery"' not in page.text
-    assert 'data-review-fix-action' in page.text
+    assert "data-review-fix-action" in page.text
     assert "重新生成正文" not in page.text
     assert f'data-job-url="/article/{article["taskId"]}/jobs/next"' not in page.text
     assert "跳过确认，一键完成" not in page.text
@@ -729,8 +722,8 @@ def test_revision_limit_replaces_the_fix_button_with_a_manual_edit_hint(tmp_path
         )
         page = client.get(f"/article/detail/{article['taskId']}?step=delivery")
 
-    assert 'data-review-fix-action' not in page.text
-    assert 'data-review-manual-action' in page.text
+    assert "data-review-fix-action" not in page.text
+    assert "data-review-manual-action" in page.text
 
 
 def test_one_click_is_an_optional_utility_instead_of_a_competing_primary_cta(tmp_path: Path) -> None:
@@ -791,7 +784,7 @@ def test_content_uses_safe_markdown_preview_and_edit_tabs(tmp_path: Path) -> Non
         ).json()["data"]
     page = client.get(f"/article/detail/{article['taskId']}?step=content")
 
-    assert 'data-content-preview' in page.text
+    assert "data-content-preview" in page.text
     assert 'data-markdown-tabs="content"' in page.text
     assert "编辑正文" in page.text
     assert "文章预览" in page.text
@@ -837,21 +830,19 @@ def test_complete_exports_only_render_in_the_passing_delivery_card(tmp_path: Pat
             task_id,
             phase="COMPLETED",
             status="SUCCESS",
-            review_report=json.dumps(
-                {"score": 91, "passed": True, "summary": "可以交付"}, ensure_ascii=False
-            ),
+            review_report=json.dumps({"score": 91, "passed": True, "summary": "可以交付"}, ensure_ascii=False),
         )
         after_review = client.get(f"/article/detail/{task_id}?step=delivery")
 
-    assert 'data-final-export' not in before_review.text
+    assert "data-final-export" not in before_review.text
     assert 'aria-label="文章导出"' not in before_review.text
-    assert 'data-final-export' in after_review.text
-    assert f'/api/article/export-markdown/{task_id}' in after_review.text
-    assert f'/api/article/export-html/{task_id}' in after_review.text
-    assert f'/api/article/export-zip/{task_id}' in after_review.text
+    assert "data-final-export" in after_review.text
+    assert f"/api/article/export-markdown/{task_id}" in after_review.text
+    assert f"/api/article/export-html/{task_id}" in after_review.text
+    assert f"/api/article/export-zip/{task_id}" in after_review.text
     detail_head_start = after_review.text.index('<section class="detail-head">')
-    detail_head = after_review.text[detail_head_start:after_review.text.index("</section>", detail_head_start)]
-    assert 'data-final-export' not in detail_head
+    detail_head = after_review.text[detail_head_start : after_review.text.index("</section>", detail_head_start)]
+    assert "data-final-export" not in detail_head
 
 
 def test_outline_and_content_expose_accessible_preview_and_edit_tabs(tmp_path: Path) -> None:
@@ -870,12 +861,12 @@ def test_outline_and_content_expose_accessible_preview_and_edit_tabs(tmp_path: P
     assert 'aria-label="大纲查看方式"' in outline_page.text
     assert 'id="outline-preview-tab"' in outline_page.text
     assert 'id="outline-edit-tab"' in outline_page.text
-    assert 'data-outline-preview' in outline_page.text
+    assert "data-outline-preview" in outline_page.text
     assert 'data-markdown-tabs="content"' in content_page.text
     assert 'aria-label="正文查看方式"' in content_page.text
     assert 'id="content-preview-tab"' in content_page.text
     assert 'id="content-edit-tab"' in content_page.text
-    assert 'data-content-preview' in content_page.text
+    assert "data-content-preview" in content_page.text
 
 
 def test_outline_preview_offers_direct_confirmation_and_content_uses_neutral_status(tmp_path: Path) -> None:
@@ -893,13 +884,13 @@ def test_outline_preview_offers_direct_confirmation_and_content_uses_neutral_sta
         )
         content_page = client.get(confirmed.headers["location"])
 
-    assert 'data-outline-confirm-form' in outline_page.text
-    assert '确认大纲并进入正文' in outline_page.text
+    assert "data-outline-confirm-form" in outline_page.text
+    assert "确认大纲并进入正文" in outline_page.text
     assert 'name="outline_json"' in outline_page.text
     assert confirmed.status_code == 303
     assert confirmed.headers["location"].endswith("?step=content#content-stage")
-    assert '开始流式生成正文' not in content_page.text
-    assert '默认实时生成' not in content_page.text
+    assert "开始流式生成正文" not in content_page.text
+    assert "默认实时生成" not in content_page.text
 
 
 def test_streaming_preview_accepts_a_contract_checked_content_replacement() -> None:
@@ -941,7 +932,7 @@ def test_image_stage_exposes_an_explicit_generation_choice_and_keeps_failures_in
     assert 'action="/article/' in before_images.text
     assert "图片来源" in before_images.text
     assert "图片来源与模型" not in before_images.text
-    assert 'data-image-generation-form' in before_images.text
+    assert "data-image-generation-form" in before_images.text
     assert failed.status_code == 303
     assert failed.headers["location"].endswith("?step=images#images-stage")
     assert "test image provider failure" in after_failure.text

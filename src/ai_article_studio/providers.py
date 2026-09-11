@@ -134,10 +134,7 @@ class ImageGenerationService:
         *,
         task_id: str | None = None,
     ) -> list[ImageResultOption]:
-        return [
-            self.generate_one(prompt, provider, index, task_id=task_id)
-            for index, prompt in enumerate(prompts)
-        ]
+        return [self.generate_one(prompt, provider, index, task_id=task_id) for index, prompt in enumerate(prompts)]
 
     def generate_one(
         self,
@@ -155,9 +152,7 @@ class ImageGenerationService:
                 except Exception:
                     continue
             fallback_reason = (
-                "生成式图解暂不可用，已使用中性占位图，避免以无关图库照片替代。"
-                if technical_illustration
-                else "自动图片来源暂不可用，已使用中性占位图。"
+                "生成式图解暂不可用，已使用中性占位图，避免以无关图库照片替代。" if technical_illustration else "自动图片来源暂不可用，已使用中性占位图。"
             )
             if self.fallback_provider is not None:
                 local = self._generate(self.fallback_provider, prompt, index, task_id)
@@ -308,9 +303,7 @@ class SiliconFlowImageProvider:
     def generate(self, prompt: ImagePromptOption, index: int, *, task_id: str | None = None) -> ImageResultOption:
         model_name = self.model.casefold()
         if model_name.startswith("qwen/qwen-image-edit"):
-            raise WorkflowValidationError(
-                "SiliconFlow 图像编辑模型需要提供源图片；当前文章配图仅支持文生图，请改用 Kwai-Kolors/Kolors 或 Qwen/Qwen-Image。"
-            )
+            raise WorkflowValidationError("SiliconFlow 图像编辑模型需要提供源图片；当前文章配图仅支持文生图，请改用 Kwai-Kolors/Kolors 或 Qwen/Qwen-Image。")
         payload = {
             "model": self.model,
             "prompt": _prompt_text(prompt),
@@ -339,8 +332,7 @@ class SiliconFlowImageProvider:
         response = self._post_generation(payload)
         if response.status_code == 401:
             raise AdapterAuthenticationError(
-                "SiliconFlow 鉴权失败（401）：请检查 AI_ARTICLE_STUDIO_SILICONFLOW_API_KEY。"
-                "百炼 / DashScope 的 Key 不能用于 SiliconFlow 图片接口。"
+                "SiliconFlow 鉴权失败（401）：请检查 AI_ARTICLE_STUDIO_SILICONFLOW_API_KEY。百炼 / DashScope 的 Key 不能用于 SiliconFlow 图片接口。"
             )
         if response.status_code == 403:
             raise AdapterAuthenticationError("SiliconFlow 无权调用当前图片模型（403）：请检查账号权限、余额和模型可用性。")
@@ -432,9 +424,7 @@ def create_image_service(settings: Settings) -> ImageGenerationService:
     return ImageGenerationService(
         {
             ImageProvider.PEXELS: (
-                PexelsImageProvider(pexels_key, timeout_seconds=settings.request_timeout_seconds)
-                if pexels_key
-                else MissingProvider("Pexels")
+                PexelsImageProvider(pexels_key, timeout_seconds=settings.request_timeout_seconds) if pexels_key else MissingProvider("Pexels")
             ),
             ImageProvider.SILICONFLOW: (
                 SiliconFlowImageProvider(
@@ -550,9 +540,7 @@ def _is_technical_illustration(prompt: ImagePromptOption) -> bool:
         return True
     prompt_text = " ".join((prompt.image_title, prompt.usage_scene, prompt.prompt_zh, prompt.prompt_en)).casefold()
     has_cjk_keyword = any(keyword in prompt_text for keyword in TECHNICAL_ILLUSTRATION_CJK_KEYWORDS)
-    has_english_keyword = any(
-        _matches_english_keyword(prompt_text, keyword) for keyword in TECHNICAL_ILLUSTRATION_ENGLISH_KEYWORDS
-    )
+    has_english_keyword = any(_matches_english_keyword(prompt_text, keyword) for keyword in TECHNICAL_ILLUSTRATION_ENGLISH_KEYWORDS)
     return has_cjk_keyword or has_english_keyword
 
 
@@ -568,21 +556,13 @@ def _matches_stock_query(photo: object, query: str) -> bool:
     query_terms = _meaningful_stock_terms(query)
     if not query_terms:
         return False
-    candidate_text = " ".join(
-        value
-        for key in ("alt", "description")
-        if isinstance((value := photo.get(key)), str)
-    )
+    candidate_text = " ".join(value for key in ("alt", "description") if isinstance((value := photo.get(key)), str))
     required_matches = 2 if len(query_terms) >= 2 else 1
     return len(query_terms & _meaningful_stock_terms(candidate_text)) >= required_matches
 
 
 def _meaningful_stock_terms(value: str) -> set[str]:
-    return {
-        term
-        for term in re.findall(r"[a-z]+(?:-[a-z]+)?", value.casefold())
-        if term not in STOCK_QUERY_STOPWORDS
-    }
+    return {term for term in re.findall(r"[a-z]+(?:-[a-z]+)?", value.casefold()) if term not in STOCK_QUERY_STOPWORDS}
 
 
 def _prompt_text(prompt: ImagePromptOption) -> str:

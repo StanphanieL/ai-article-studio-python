@@ -129,7 +129,6 @@ class _WorkflowPersistence:
             pass
 
 
-
 def get_article(session: Session, task_id: str) -> Article:
     article = session.scalar(select(Article).where(Article.task_id == task_id, Article.is_deleted == 0))
     if not article:
@@ -189,4 +188,3 @@ def local_image_paths(raw_image_results: str | None, upload_dir: Path) -> set[Pa
 def safe_error_message(error: Exception) -> str:
     """Return diagnostics safe for persistence and page/API delivery."""
     return redact_sensitive_text(str(error))
-

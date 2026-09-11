@@ -188,9 +188,7 @@ def test_quality_review_supports_legacy_payload_and_serializes_blocking_issues()
     legacy = QualityReviewResult.model_validate_json('{"score": 94, "passed": true, "summary": "旧数据"}')
 
     assert legacy.blocking_issues == []
-    assert QualityReviewResult(score=94, passed=True, summary="有问题", blocking_issues=["缺少 H1"]).model_dump(by_alias=True)[
-        "blockingIssues"
-    ] == ["缺少 H1"]
+    assert QualityReviewResult(score=94, passed=True, summary="有问题", blocking_issues=["缺少 H1"]).model_dump(by_alias=True)["blockingIssues"] == ["缺少 H1"]
 
 
 def test_blocking_review_cannot_complete_even_with_a_high_score() -> None:

@@ -130,10 +130,7 @@ class _WorkflowExecution:
                     # guards.  Only a persisted ONE_CLICK runner job should
                     # remain RUNNING until JobRunner.finish_job(); a direct
                     # orchestration call is terminal at this point.
-                    if (
-                        article.status == ArticleStatus.RUNNING.value
-                        and article.execution_mode != WorkflowRunMode.ONE_CLICK.value
-                    ):
+                    if article.status == ArticleStatus.RUNNING.value and article.execution_mode != WorkflowRunMode.ONE_CLICK.value:
                         return workflow._update(task_id, status=ArticleStatus.SUCCESS.value)
                     return article
                 if article.status == ArticleStatus.FAILED.value:

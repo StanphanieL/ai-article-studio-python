@@ -9,9 +9,7 @@ from ai_article_studio.schemas import ImagePlacement, ImagePromptOption, ImageVi
 
 
 def plan(**values):
-    return ImagePromptOption(
-        image_title="配图", usage_scene="正文", prompt_zh="图", prompt_en="image", **values
-    )
+    return ImagePromptOption(image_title="配图", usage_scene="正文", prompt_zh="图", prompt_en="image", **values)
 
 
 def test_generated_plan_repairs_anchor_and_role_without_mutating_input():
@@ -80,12 +78,14 @@ def test_asset_path_parser_ignores_malformed_legacy_records(tmp_path, raw):
 def test_asset_path_parser_only_returns_contained_local_assets(tmp_path):
     from ai_article_studio._workflow_persistence import local_image_paths
 
-    raw = json.dumps([
-        {"imageUrl": "/uploads/images/task/image.svg"},
-        {"imageUrl": "/uploads/images/../outside.svg"},
-        {"imageUrl": "https://supplier.test/image.png"},
-        {"imageUrl": "/uploads/images/"},
-        {"imageUrl": 3},
-    ])
+    raw = json.dumps(
+        [
+            {"imageUrl": "/uploads/images/task/image.svg"},
+            {"imageUrl": "/uploads/images/../outside.svg"},
+            {"imageUrl": "https://supplier.test/image.png"},
+            {"imageUrl": "/uploads/images/"},
+            {"imageUrl": 3},
+        ]
+    )
 
     assert local_image_paths(raw, tmp_path) == {tmp_path / "task/image.svg"}

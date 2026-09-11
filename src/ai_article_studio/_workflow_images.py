@@ -115,9 +115,7 @@ class _WorkflowImages:
             article.review_report = article.quality_score = None
             article.phase = ArticlePhase.CONTENT_GENERATION.value
             article.supervisor_action = workflow.encode_image_action(SupervisorAction.GENERATE_IMAGE_RESULTS.value, provider)
-            article.supervisor_reason = (
-                f"已生成 {completed}/{total} 张图片" if completed >= total else f"正在生成第 {completed + 1}/{total} 张图片"
-            )
+            article.supervisor_reason = f"已生成 {completed}/{total} 张图片" if completed >= total else f"正在生成第 {completed + 1}/{total} 张图片"
             if workflow._background_job_execution.get():
                 article.status = ArticleStatus.RUNNING.value
             else:
@@ -198,9 +196,7 @@ class _WorkflowImages:
         for index in selected_indices:
             if index < 0 or index >= len(results):
                 raise WorkflowValidationError("图片索引不存在，无法执行视觉质检")
-            results[index] = results[index].model_copy(
-                update={"visual_review": workflow._safe_visual_review(results[index], prompts[index])}
-            )
+            results[index] = results[index].model_copy(update={"visual_review": workflow._safe_visual_review(results[index], prompts[index])})
         article.image_results = workflow._dump_image_records(results)
         counts: dict[str, int] = {}
         for index in selected_indices:
@@ -246,11 +242,9 @@ class _WorkflowImages:
         return generate_one(prompt, provider, index, **kwargs)
 
 
-
 def accepts_task_id(operation: object) -> bool:
     try:
         parameters = inspect.signature(operation).parameters.values()
     except (TypeError, ValueError):
         return False
     return any(parameter.name == "task_id" or parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters)
-

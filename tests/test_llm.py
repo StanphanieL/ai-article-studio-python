@@ -55,11 +55,7 @@ def test_real_stream_content_reads_openai_compatible_sse_deltas() -> None:
         assert request.content and b'"stream":true' in request.content
         return httpx.Response(
             200,
-            content=(
-                b'data: {"choices":[{"delta":{"content":"# hello"}}]}\n\n'
-                b'data: {"choices":[{"delta":{"content":" world"}}]}\n\n'
-                b"data: [DONE]\n\n"
-            ),
+            content=(b'data: {"choices":[{"delta":{"content":"# hello"}}]}\n\ndata: {"choices":[{"delta":{"content":" world"}}]}\n\ndata: [DONE]\n\n'),
             request=request,
         )
 
@@ -188,9 +184,7 @@ def test_real_requests_use_the_article_model_configuration() -> None:
 
     agent = OpenAICompatibleArticleAgent(Settings(openai_api_key="test-key", _env_file=None))
     agent.client = httpx.Client(transport=httpx.MockTransport(handler))
-    configured = agent.with_model_config(
-        ArticleModelConfig(text_model="qwen-plus", temperature=0.2, max_completion_tokens=1024)
-    )
+    configured = agent.with_model_config(ArticleModelConfig(text_model="qwen-plus", temperature=0.2, max_completion_tokens=1024))
 
     assert configured._chat("hello") == "ok"
     assert captured["model"] == "qwen-plus"
@@ -230,9 +224,7 @@ def test_mock_image_plans_assign_distinct_roles_anchors_and_layouts() -> None:
 
 
 def test_mock_image_plans_cover_the_full_eight_image_limit_without_reusing_roles() -> None:
-    content = "# Eight images\n\n" + "\n\n".join(
-        f"## Section {index}\n\nParagraph {index}." for index in range(1, 8)
-    )
+    content = "# Eight images\n\n" + "\n\n".join(f"## Section {index}\n\nParagraph {index}." for index in range(1, 8))
 
     plans = MockArticleAgent().image_prompts("topic", "title", content, "TECH", 8)
 
@@ -472,9 +464,7 @@ def test_real_image_plan_uses_a_role_fallback_when_no_english_stock_terms_are_av
 
     agent = OpenAICompatibleArticleAgent(Settings(openai_api_key="test-key", _env_file=None))
     agent.client = httpx.Client(
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(200, json={"choices": [{"message": {"content": response}}]}, request=request)
-        )
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"choices": [{"message": {"content": response}}]}, request=request))
     )
 
     plans = agent.image_prompts("design systems", "Design systems", "# Design systems", "TECH", 1)

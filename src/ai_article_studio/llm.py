@@ -233,8 +233,7 @@ class OpenAICompatibleArticleAgent(MockArticleAgent):
 
     def titles(self, topic: str, style: str) -> list[TitleOption]:
         return self._json(
-            f"为选题“{topic}”生成 3 个 {style} 风格标题。\n{_factuality_contract()}\n"
-            "只返回 JSON 数组，每项必须是 {\"title\": string, \"reason\": string}。",
+            f'为选题“{topic}”生成 3 个 {style} 风格标题。\n{_factuality_contract()}\n只返回 JSON 数组，每项必须是 {{"title": string, "reason": string}}。',
             validator=_title_options,
             schema="JSON 数组；每一项严格为 title 和 reason 两个字符串字段。",
         )  # type: ignore[return-value]
@@ -242,7 +241,7 @@ class OpenAICompatibleArticleAgent(MockArticleAgent):
     def outline(self, topic: str, title: str, style: str) -> list[OutlineItem]:
         return self._json(
             f"为选题“{topic}”、标题“{title}”生成 3-5 项 {style} 风格文章大纲。\n{_factuality_contract()}\n"
-            "只返回 JSON 数组，每项必须是 {\"heading\": string, \"description\": string}。",
+            '只返回 JSON 数组，每项必须是 {"heading": string, "description": string}。',
             validator=_outline_items,
             schema="JSON 数组；每一项严格为 heading 和 description 两个字符串字段。",
         )  # type: ignore[return-value]
@@ -308,11 +307,10 @@ class OpenAICompatibleArticleAgent(MockArticleAgent):
         return self._json(
             "评审下列 Markdown 图文稿。重点检查：虚构二维码/扫码/附件/下载/课程资源、无来源用户数、百分比或亲测/专家/研究背书、"
             "健康健身类保证性效果承诺，以及不必要的 JSON/YAML/代码围栏。上述任一项必须写入 blockingIssues。\n"
-            "仅返回 JSON 对象，严格 Schema：{\"score\": 0-100 的整数, \"passed\": boolean, \"summary\": string, "
-            "\"revisionAction\": string|null, \"revisionReason\": string|null, \"blockingIssues\": string[], "
-            "\"issues\": string[], \"suggestions\": string[]}。三个 Issues 数组只能包含简短字符串，不能包含对象。"
-            "只有 blockingIssues 为空且达到交付标准时，passed 才能为 true。\n文章：\n"
-            + article,
+            '仅返回 JSON 对象，严格 Schema：{"score": 0-100 的整数, "passed": boolean, "summary": string, '
+            '"revisionAction": string|null, "revisionReason": string|null, "blockingIssues": string[], '
+            '"issues": string[], "suggestions": string[]}。三个 Issues 数组只能包含简短字符串，不能包含对象。'
+            "只有 blockingIssues 为空且达到交付标准时，passed 才能为 true。\n文章：\n" + article,
             validator=QualityReviewResult.model_validate,
             schema=(
                 "JSON 对象，score 为 0-100 整数，passed 为布尔值，summary 为字符串；revisionAction/revisionReason 为字符串或 null；"
@@ -397,11 +395,7 @@ def _generated_image_prompt_options(payload: object) -> list[ImagePromptOption]:
     for item in payload:
         if not isinstance(item, dict):
             raise ValueError("配图方案的每一项必须是 JSON 对象")
-        missing = [
-            public_name
-            for public_name, python_name in _SEMANTIC_IMAGE_PLAN_FIELDS.items()
-            if public_name not in item and python_name not in item
-        ]
+        missing = [public_name for public_name, python_name in _SEMANTIC_IMAGE_PLAN_FIELDS.items() if public_name not in item and python_name not in item]
         if missing:
             raise ValueError(f"配图方案缺少语义字段：{', '.join(missing)}")
         normalized_item = dict(item)
@@ -446,12 +440,7 @@ def _validate_generated_image_plan(option: ImagePromptOption) -> None:
     elif not _STOCK_QUERY_PATTERN.fullmatch(option.stock_query.strip()):
         raise ValueError("stockQuery 必须是 2-5 个 ASCII 英文词")
     if option.visual_role is ImageVisualRole.COVER:
-        if (
-            option.placement is not ImagePlacement.COVER
-            or option.anchor_heading
-            or option.anchor_paragraph != 0
-            or option.layout is not ImageLayout.HERO
-        ):
+        if option.placement is not ImagePlacement.COVER or option.anchor_heading or option.anchor_paragraph != 0 or option.layout is not ImageLayout.HERO:
             raise ValueError("封面必须使用 COVER 位置、空锚点、段落 0 和 HERO 布局")
         return
     if option.placement is ImagePlacement.COVER:
@@ -486,16 +475,12 @@ def _validate_visual_grounding(plans: list[ImagePromptOption], article_context: 
 
 
 def _json_repair_prompt(raw: str, schema: str, *, violation: str = "") -> str:
-    header = (
-        "将以下模型输出修复为可通过严格 Schema 校验的 JSON；只输出 JSON，不要解释。\n"
-        f"目标 Schema：{schema}\n"
-    )
+    header = f"将以下模型输出修复为可通过严格 Schema 校验的 JSON；只输出 JSON，不要解释。\n目标 Schema：{schema}\n"
     return "".join(
         (
             header,
             f"必须修复的问题：{violation}\n" if violation else "",
-            "若问题列表中原本是对象，请提取其含义并改成简短字符串。\n"
-            f"原始输出：\n{raw}",
+            f"若问题列表中原本是对象，请提取其含义并改成简短字符串。\n原始输出：\n{raw}",
         )
     )
 

@@ -238,15 +238,10 @@ def render_markdown(markdown_text: str, images: Sequence[ImageResultOption] = ()
     return _decorate_image_figures(sanitized, images)
 
 
-def _replace_image_urls(
-    images: Sequence[ImageResultOption], replacements: dict[str, str]
-) -> list[ImageResultOption]:
+def _replace_image_urls(images: Sequence[ImageResultOption], replacements: dict[str, str]) -> list[ImageResultOption]:
     """Keep trusted layout metadata aligned with an embedded/exported image URL."""
 
-    return [
-        image.model_copy(update={"image_url": replacements.get(image.image_url, image.image_url)})
-        for image in images
-    ]
+    return [image.model_copy(update={"image_url": replacements.get(image.image_url, image.image_url)}) for image in images]
 
 
 def _decorate_image_figures(rendered_html: str, images: Sequence[ImageResultOption]) -> str:

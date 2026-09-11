@@ -45,7 +45,7 @@ uv run ruff check .
 node --check src/ai_article_studio/static/stream.js
 ```
 
-For a code-oriented learning path and interview preparation guide (Chinese), see [Learning Guide](docs/learning-guide.zh-CN.md).
+For a code-oriented learning path and interview preparation guide (Chinese), see [Learning Guide](docs/learning-guide.zh-CN.md). For the layer ownership, style rules, and the deliberate FastAPI-versus-CLI boundary, see [Architecture and Style Guide](docs/architecture.md).
 
 ## Project Boundary
 

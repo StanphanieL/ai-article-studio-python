@@ -51,11 +51,7 @@ def test_visual_brief_catalog_keeps_anchor_text_and_excludes_fenced_headings() -
 
 
 def test_image_anchor_excerpt_uses_the_exact_canonical_paragraph_or_section_end() -> None:
-    content = (
-        "# 标题\n\n引言说明文章关注的行为变化。\n\n"
-        "## 行为锚点\n\n先记录触发条件。\n\n"
-        "重复执行同一流程后，记录偏离发生的位置与原因。"
-    )
+    content = "# 标题\n\n引言说明文章关注的行为变化。\n\n## 行为锚点\n\n先记录触发条件。\n\n重复执行同一流程后，记录偏离发生的位置与原因。"
 
     paragraph_excerpt = image_anchor_excerpt(content, "AFTER_PARAGRAPH", "行为锚点", 2)
     section_end_excerpt = image_anchor_excerpt(content, "SECTION_END", "行为锚点", 0)

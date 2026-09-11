@@ -66,6 +66,8 @@ _IMAGE_PLAN_VISUAL_FIELDS = (
     "visual_role",
     "stock_query",
 )
+
+
 class ArticleWorkflow:
     def __init__(
         self,
@@ -228,11 +230,7 @@ class ArticleWorkflow:
                 # One-click mode confirms its recommended title internally.
                 # That checkpoint is durable, but the parent background job is
                 # still running and must not look terminal to the page.
-                article.status = (
-                    ArticleStatus.RUNNING.value
-                    if self._background_job_execution.get()
-                    else ArticleStatus.SUCCESS.value
-                )
+                article.status = ArticleStatus.RUNNING.value if self._background_job_execution.get() else ArticleStatus.SUCCESS.value
                 article.supervisor_action = SupervisorAction.GENERATE_OUTLINE.value
                 article.supervisor_reason = "标题已确认，下一步生成文章大纲"
                 session.commit()
@@ -421,10 +419,7 @@ class ArticleWorkflow:
                 # page field. Recompute it from the stored article whenever a
                 # user changes an anchor or placement.
                 updated_plan = self._with_anchor_excerpt(article.content or "", updated_plan)
-                visual_change = any(
-                    getattr(previous_plan, field) != getattr(updated_plan, field)
-                    for field in _IMAGE_PLAN_VISUAL_FIELDS
-                )
+                visual_change = any(getattr(previous_plan, field) != getattr(updated_plan, field) for field in _IMAGE_PLAN_VISUAL_FIELDS)
                 prompts[index] = updated_plan
                 self._validate_image_plan_contract(article.content or "", prompts)
                 article.image_prompts = self._dump_image_records(prompts)
@@ -441,9 +436,7 @@ class ArticleWorkflow:
                     if results:
                         results[index] = results[index].model_copy(update=updated_plan.model_dump())
                         article.image_results = self._dump_image_records(results)
-                    next_action = (
-                        SupervisorAction.COMPOSE_ARTICLE.value if results else SupervisorAction.GENERATE_IMAGE_RESULTS.value
-                    )
+                    next_action = SupervisorAction.COMPOSE_ARTICLE.value if results else SupervisorAction.GENERATE_IMAGE_RESULTS.value
                     reason = "配图位置已更新，请重新合成图文稿" if results else "配图方案已更新，请生成图片素材"
                     output = "已保存配图位置与版式；图片素材已保留" if results else "已保存配图位置与版式；请生成图片素材"
 
@@ -485,9 +478,7 @@ class ArticleWorkflow:
                 article.review_report = article.quality_score = None
                 article.phase = ArticlePhase.CONTENT_GENERATION.value
                 article.status = ArticleStatus.SUCCESS.value
-                article.supervisor_action = (
-                    SupervisorAction.COMPOSE_ARTICLE.value if results else SupervisorAction.GENERATE_IMAGE_RESULTS.value
-                )
+                article.supervisor_action = SupervisorAction.COMPOSE_ARTICLE.value if results else SupervisorAction.GENERATE_IMAGE_RESULTS.value
                 article.supervisor_reason = "配图顺序已更新，请重新合成图文稿"
                 article.error_message = None
                 started = time.perf_counter()
@@ -589,11 +580,7 @@ class ArticleWorkflow:
         """Make interrupted local work retryable after a process restart."""
 
         with self.sessions() as session:
-            articles = list(
-                session.scalars(
-                    select(Article).where(Article.status.in_([ArticleStatus.QUEUED.value, ArticleStatus.RUNNING.value]))
-                )
-            )
+            articles = list(session.scalars(select(Article).where(Article.status.in_([ArticleStatus.QUEUED.value, ArticleStatus.RUNNING.value]))))
             for article in articles:
                 article.status = ArticleStatus.FAILED.value
                 article.error_message = "任务在服务重启时中断，请重试此步骤。"
@@ -813,11 +800,7 @@ class ArticleWorkflow:
 
     def _generate_titles(self, article: Article) -> str:
         agent = self._agent_for(article)
-        titles = [
-            item
-            for item in agent.titles(article.topic, article.style)
-            if not factuality_contract_issues(f"{item.title}\n{item.reason}")
-        ]
+        titles = [item for item in agent.titles(article.topic, article.style) if not factuality_contract_issues(f"{item.title}\n{item.reason}")]
         if not titles:
             raise WorkflowValidationError("生成的标题包含不可核验的资源或背书，请重试生成标题。")
         article.title_options = json.dumps([item.model_dump(by_alias=True) for item in titles], ensure_ascii=False)
