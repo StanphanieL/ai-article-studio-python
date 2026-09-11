@@ -11,12 +11,15 @@ import re
 from dataclasses import dataclass
 
 _ACTION_PROVIDER_SEPARATOR = "|provider="
-_AUTH_VALUE_PATTERN = re.compile(r"(?i)(\\b(?:(?:proxy-)?authorization\\s*:\\s*)?(?:bearer|basic)\\s+)([^\\s,;]+)")
+_AUTH_VALUE_PATTERN = re.compile(r"(?i)(\b(?:(?:proxy-)?authorization\s*:\s*)?(?:bearer|basic)\s+)([^\s,;]+)")
+_QUOTED_SECRET_FIELD_PATTERN = re.compile(
+    r"(?i)([\"'](?:api[_-]?key|access[_-]?token|id[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password)[\"']\s*:\s*[\"'])([^\"']*)([\"'])"
+)
 _SECRET_ASSIGNMENT_PATTERN = re.compile(
-    r"(?i)(\\b(?:api[_-]?key|access[_-]?token|id[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password)\\b\\s*[:=]\\s*)([^\\s,;}&]+)"
+    r"(?i)(\b(?:api[_-]?key|access[_-]?token|id[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password)\b\s*[:=]\s*)([^\s,;}&]+)"
 )
 _QUERY_SECRET_PATTERN = re.compile(
-    r"(?i)([?&](?:key|api[_-]?key|access[_-]?token|id[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password)=)([^&#\\s]+)"
+    r"(?i)([?&](?:key|api[_-]?key|access[_-]?token|id[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password)=)([^&#\s]+)"
 )
 
 
@@ -60,8 +63,21 @@ class AdapterResponseError(AdapterError):
     """A provider returned a successful but unusable response payload."""
 
 
+class AdapterResponseValidationError(AdapterResponseError, WorkflowValidationError):
+    """An invalid provider response that keeps the legacy validation mapping."""
+
+
 class AdapterTransportError(AdapterError):
     """A transport or HTTP-status failure, without exposing vendor diagnostics."""
+
+
+def redact_sensitive_text(value: str) -> str:
+    """Redact the established auth-header, JSON, assignment, and query formats."""
+
+    redacted = _AUTH_VALUE_PATTERN.sub(r"\1[REDACTED]", value)
+    redacted = _QUOTED_SECRET_FIELD_PATTERN.sub(r"\1[REDACTED]\3", redacted)
+    redacted = _SECRET_ASSIGNMENT_PATTERN.sub(r"\1[REDACTED]", redacted)
+    return _QUERY_SECRET_PATTERN.sub(r"\1[REDACTED]", redacted)
 
 
 def safe_adapter_error_message(error: Exception, fallback: str) -> str:
@@ -75,9 +91,7 @@ def safe_adapter_error_message(error: Exception, fallback: str) -> str:
     message = str(error).strip()
     if not message:
         return fallback
-    message = _AUTH_VALUE_PATTERN.sub(r"\1[REDACTED]", message)
-    message = _SECRET_ASSIGNMENT_PATTERN.sub(r"\1[REDACTED]", message)
-    return _QUERY_SECRET_PATTERN.sub(r"\1[REDACTED]", message)
+    return redact_sensitive_text(message)
 
 
 @dataclass(frozen=True, slots=True)

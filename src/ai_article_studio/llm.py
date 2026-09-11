@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from .anchors import image_anchor_catalog, image_visual_brief_catalog
 from .config import Settings
 from .contracts import ArticleAgent
-from .domain import AdapterConfigurationError, AdapterResponseError, AdapterTransportError
+from .domain import AdapterConfigurationError, AdapterResponseError, AdapterResponseValidationError, AdapterTransportError
 from .schemas import (
     ArticleModelConfig,
     ImageLayout,
@@ -193,8 +193,11 @@ class OpenAICompatibleArticleAgent(MockArticleAgent):
             return validator(payload) if validator else payload
         except (ValueError, TypeError, json.JSONDecodeError, ValidationError) as error:
             repaired = self._chat(_json_repair_prompt(raw, schema, violation=str(error)))
-            payload = _parse_json_payload(repaired)
-            return validator(payload) if validator else payload
+            try:
+                payload = _parse_json_payload(repaired)
+                return validator(payload) if validator else payload
+            except (ValueError, TypeError, json.JSONDecodeError, ValidationError) as repair_error:
+                raise AdapterResponseValidationError(str(repair_error)) from repair_error
 
     def stream_content(
         self,

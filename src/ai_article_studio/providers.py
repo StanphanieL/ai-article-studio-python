@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import inspect
 import math
 import re
@@ -244,8 +245,11 @@ class PexelsImageProvider:
         photo = next((candidate for candidate in photos if _matches_stock_query(candidate, query)), None)
         if not photo:
             raise AdapterResponseError("Pexels returned no photo matching stock query")
-        src = photo.get("src", {})
-        image_url = src.get("landscape") or src.get("large") or src.get("original")
+        try:
+            src = photo.get("src", {})
+            image_url = src.get("landscape") or src.get("large") or src.get("original")
+        except AttributeError as error:
+            raise AdapterResponseError("Pexels 返回的图片数据不合法") from error
         if not image_url:
             raise AdapterResponseError("Pexels photo has no usable image URL")
         return ImageResultOption(
@@ -400,13 +404,14 @@ class GoogleAIImageProvider:
             raise AdapterTransportError("Google AI 图片服务暂不可用，请稍后重试。") from error
         try:
             parts = response.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-        except (AttributeError, IndexError, TypeError, ValueError) as error:
+            inline = next((part.get("inlineData") for part in parts if part.get("inlineData")), None)
+            if not isinstance(inline, dict) or not isinstance(inline.get("data"), str):
+                raise ValueError("missing inline image data")
+            suffix = _extension_for_content_type(inline.get("mimeType", "image/png"))
+            image_bytes = base64.b64decode(inline["data"], validate=True)
+        except (AttributeError, IndexError, TypeError, ValueError, binascii.Error) as error:
             raise AdapterResponseError("Google AI response has no inline image") from error
-        inline = next((part.get("inlineData") for part in parts if part.get("inlineData")), None)
-        if not inline or not inline.get("data"):
-            raise AdapterResponseError("Google AI response has no inline image")
-        suffix = _extension_for_content_type(inline.get("mimeType", "image/png"))
-        local_url = persist_bytes(base64.b64decode(inline["data"]), self.upload_dir, suffix, task_id=task_id)
+        local_url = persist_bytes(image_bytes, self.upload_dir, suffix, task_id=task_id)
         return _generated_result(prompt, local_url, "GOOGLE_AI")
 
 

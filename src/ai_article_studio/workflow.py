@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import re
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -27,6 +26,7 @@ from .domain import (
     WorkflowExecutionError,
     WorkflowOperation,
     WorkflowValidationError,
+    redact_sensitive_text,
 )
 from .exports import ArticleExporter, ExportFile
 from .models import AgentLog, Article
@@ -76,20 +76,6 @@ _GENERATED_ROLE_FALLBACK_ORDER = (
     ImageVisualRole.DATA,
     ImageVisualRole.CLOSING,
 )
-_AUTH_VALUE_PATTERN = re.compile(
-    r"(?i)(\b(?:(?:proxy-)?authorization\s*:\s*)?(?:bearer|basic)\s+)([^\s,;]+)"
-)
-_QUOTED_SECRET_FIELD_PATTERN = re.compile(
-    r"(?i)([\"'](?:api[_-]?key|access[_-]?token|id[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password)[\"']\s*:\s*[\"'])([^\"']*)([\"'])"
-)
-_SECRET_ASSIGNMENT_PATTERN = re.compile(
-    r"(?i)(\b(?:api[_-]?key|access[_-]?token|id[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password)\b\s*[:=]\s*)([^\s,;}&]+)"
-)
-_QUERY_SECRET_PATTERN = re.compile(
-    r"(?i)([?&](?:key|api[_-]?key|access[_-]?token|id[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password)=)([^&#\s]+)"
-)
-
-
 class ArticleWorkflow:
     def __init__(
         self,
@@ -1773,10 +1759,7 @@ def _safe_error_message(error: Exception) -> str:
 def _redact_sensitive_text(value: str) -> str:
     """Redact common auth headers plus JSON, query, and key-value secrets."""
 
-    redacted = _AUTH_VALUE_PATTERN.sub(r"\1[REDACTED]", value)
-    redacted = _QUOTED_SECRET_FIELD_PATTERN.sub(r"\1[REDACTED]\3", redacted)
-    redacted = _SECRET_ASSIGNMENT_PATTERN.sub(r"\1[REDACTED]", redacted)
-    return _QUERY_SECRET_PATTERN.sub(r"\1[REDACTED]", redacted)
+    return redact_sensitive_text(value)
 
 
 def _accepts_task_id(operation: object) -> bool:
