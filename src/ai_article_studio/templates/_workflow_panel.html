@@ -2,7 +2,12 @@
   <div class="wizard-next-action-main">
     <span class="status {{ article.status|lower }}">{% if article.status == 'QUEUED' %}排队中{% elif article.status == 'RUNNING' %}生成中{% elif article.status == 'CANCELLING' %}正在取消{% elif article.status == 'FAILED' %}需要处理{% elif article.status == 'SUCCESS' %}已准备好{% else %}{{ article.status }}{% endif %}</span>
     <div class="button-row">
-      {% if can_continue %}
+      {% if outline_confirmation_required %}
+      <form method="post" action="/article/{{ article.task_id }}/outline" data-pending-form data-outline-confirm-form>
+        <input type="hidden" name="outline_markdown" value="{{ outline_markdown }}">
+        <button class="button primary" type="submit">确认大纲并进入正文</button>
+      </form>
+      {% elif can_continue %}
       {% if next_action in ['GENERATE_CONTENT', 'REGENERATE_CONTENT'] %}
       <button class="button primary" type="button" data-default-stream data-stream-url="/api/article/real-stream-generate-content/{{ article.task_id }}" data-content-target="#content-editor" data-progress-target="#stream-progress">{{ next_action_label }}</button>
       {% else %}

@@ -316,6 +316,13 @@ def page_context(article, settings: Settings, requested_step: str | None = None)
         "phase_label": "待修订" if review_needs_revision else phase_labels.get(phase, phase),
         "next_action": next_action,
         "next_action_label": labels.get(next_action, "继续下一步"),
+        # An outline is an explicit author checkpoint.  Do not expose the body
+        # SSE action until the author has confirmed it and the content card is
+        # available in the DOM.
+        "outline_confirmation_required": phase == "OUTLINE_EDITING"
+        and bool(article.outline)
+        and article.execution_mode != WorkflowRunMode.ONE_CLICK.value
+        and article.status not in {"QUEUED", "RUNNING", "CANCELLING"},
         "can_continue": next_action in labels
         and next_action != "GENERATE_IMAGE_RESULTS"
         and not review_needs_revision

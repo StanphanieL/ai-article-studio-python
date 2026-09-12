@@ -989,6 +989,23 @@ def test_outline_preview_offers_direct_confirmation_and_content_uses_neutral_sta
     assert "默认实时生成" not in content_page.text
 
 
+def test_outline_confirmation_replaces_the_unusable_bottom_content_stream_action(tmp_path: Path) -> None:
+    """The outline card has no content editor, so it must not start an SSE body stream."""
+
+    with build_client(tmp_path) as client:
+        task_id = client.post("/api/article/create", json={"topic": "大纲确认入口"}).json()["data"]
+        titles = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]
+        selected_title = json.loads(titles["titleOptions"])[0]["title"]
+        client.post("/api/article/confirm-title", json={"taskId": task_id, "selectedTitle": selected_title})
+        client.post(f"/api/article/continue-workflow/{task_id}")
+        outline_page = client.get(f"/article/detail/{task_id}?step=outline")
+
+    navigation = outline_page.text[outline_page.text.index('<nav class="wizard-card-navigation"') :]
+    assert "data-default-stream" not in navigation
+    assert f'action="/article/{task_id}/outline"' in navigation
+    assert "确认大纲并进入正文" in navigation
+
+
 def test_streaming_preview_accepts_a_contract_checked_content_replacement() -> None:
     script = (Path(__file__).parents[1] / "src" / "ai_article_studio" / "static" / "stream.js").read_text(encoding="utf-8")
 

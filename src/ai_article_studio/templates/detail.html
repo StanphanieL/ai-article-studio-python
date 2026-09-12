@@ -110,13 +110,6 @@
       </div>
       <section id="outline-preview-panel" role="tabpanel" aria-labelledby="outline-preview-tab" data-markdown-panel="preview">
         <div class="article-preview outline-preview" data-outline-preview aria-label="大纲预览">{{ outline_html | safe }}</div>
-        {% if outline_editable | default(false) %}
-        <form class="editor-actions" method="post" action="/article/{{ article.task_id }}/outline" data-pending-form data-outline-confirm-form>
-          <input type="hidden" name="outline_markdown" value="{{ outline_markdown }}">
-          <button class="button primary" type="submit">确认大纲并进入正文</button>
-          <span class="muted">需要调整时，可切换到“编辑 Markdown”。</span>
-        </form>
-        {% endif %}
       </section>
       <section id="outline-edit-panel" role="tabpanel" aria-labelledby="outline-edit-tab" data-markdown-panel="edit" hidden>
         <form method="post" action="/article/{{ article.task_id }}/outline" data-pending-form data-outline-form>
