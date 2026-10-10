@@ -10,7 +10,7 @@ from test_api_workflow import build_client
 from ai_article_studio.domain import WorkflowValidationError
 
 
-def test_stream_checkpoint_restart_completion_export_and_delete(tmp_path):
+def test_stream_checkpoint_restart_composition_export_and_delete(tmp_path):
     with build_client(tmp_path) as client:
         workflow = client.app.state.workflow
         task_id = workflow.create("工作流持久化边界")
@@ -32,10 +32,12 @@ def test_stream_checkpoint_restart_completion_export_and_delete(tmp_path):
         assert recovered.status == "FAILED"
         assert recovered.supervisor_action == "GENERATE_IMAGE_PROMPTS"
         assert recovered.content == content
-        completed = client.post(f"/api/article/one-click-generate/{task_id}")
-        assert completed.status_code == 200
-        assert completed.json()["data"]["phase"] == "COMPLETED"
-        assert completed.json()["data"]["status"] == "SUCCESS"
+        composed = client.post(f"/api/article/one-click-generate/{task_id}")
+        assert composed.status_code == 200
+        assert composed.json()["data"]["phase"] == "ARTICLE_COMPOSITION"
+        assert composed.json()["data"]["status"] == "SUCCESS"
+        assert composed.json()["data"]["finalMarkdown"]
+        assert composed.json()["data"]["reviewReport"] is None
         archive = client.get(f"/api/article/export-zip/{task_id}")
         assert archive.status_code == 200
         with ZipFile(BytesIO(archive.content)) as exported:

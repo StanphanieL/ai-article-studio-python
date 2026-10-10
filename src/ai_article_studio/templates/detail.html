@@ -90,8 +90,8 @@
     <form class="inline-form" method="post" action="/article/{{ article.task_id }}/title" data-title-confirm-form><input name="selected_title" placeholder="或者输入自定义标题" required><button class="button secondary" type="submit">确认自定义标题</button></form>
     <aside class="workflow-utilities title-one-click">
       <strong>直接生成整篇文章</strong>
-      <p>将采用第一条推荐标题，自动完成后续创作。</p>
-      <form method="post" action="/article/{{ article.task_id }}/one-click" data-job-form data-job-url="/article/{{ article.task_id }}/jobs/one-click" data-pending-text="正在提交一键生成…"><button class="button secondary" type="submit">采用推荐标题并一键完成</button></form>
+      <p>将采用第一条推荐标题，自动生成图文稿；审核仍需你手动发起。</p>
+      <form method="post" action="/article/{{ article.task_id }}/one-click" data-job-form data-job-url="/article/{{ article.task_id }}/jobs/one-click" data-pending-text="正在提交一键生成…"><button class="button secondary" type="submit">采用推荐标题并生成图文稿</button></form>
     </aside>
     {% else %}
     <p class="wizard-empty">生成标题候选后，会在这里展示备选方向；也可以直接输入自定义标题。</p>
@@ -193,7 +193,7 @@
 
   {% else %}
   <article class="content-card wizard-stage" id="delivery-stage" data-step-card="delivery">
-    <div class="card-heading"><h2>交付稿</h2><span class="delivery-state {% if review_needs_revision %}blocked{% endif %}">{% if review_needs_revision %}{{ review.score }}/100 · 尚不可交付{% elif article.quality_score %}{{ article.quality_score }}/100{% else %}待评审{% endif %}</span></div>
+    <div class="card-heading"><h2>交付稿</h2><span class="delivery-state {% if review_needs_revision %}blocked{% endif %}">{% if review_needs_revision %}{{ review.score }}/100 · 尚不可交付{% elif review_pending %}待审核{% elif article.quality_score %}{{ article.quality_score }}/100{% else %}待评审{% endif %}</span></div>
     {% if article.final_markdown %}
       {% if review %}
       <div class="review-summary {% if review_needs_revision %}blocked{% endif %}"><p class="score">{{ review.score }}<small>/100</small></p><div><strong>{% if review_needs_revision %}需先修订阻断问题{% else %}已通过质量检查{% endif %}</strong><p class="muted">{% if review_needs_revision %}评分不能覆盖交付阻断项。请先处理工作流面板中列出的 {{ review_blocking_issues|length }} 项问题。{% else %}图文稿已准备好，可预览或导出。{% endif %}</p></div></div>
@@ -203,7 +203,7 @@
       {% if can_export_final %}
       <section class="delivery-export" data-final-export aria-label="文章导出"><div><strong>完整图文稿已通过评审</strong><p>导出内容包含最终 Markdown、图文 HTML 与归因信息。</p></div><div class="export-links"><a href="/api/article/export-markdown/{{ article.task_id }}">Markdown</a><a href="/api/article/export-html/{{ article.task_id }}">HTML</a><a href="/api/article/export-zip/{{ article.task_id }}">ZIP</a></div></section>
       {% else %}
-      <p class="delivery-export-hint">{% if review_needs_revision %}完成阻断修订后可导出完整图文稿。{% else %}执行质量评审并通过后可导出完整图文稿。{% endif %}</p>
+      <p class="delivery-export-hint">{% if review_needs_revision %}完成阻断修订后可导出完整图文稿。{% else %}手动审核图文稿并通过后可导出完整图文稿。{% endif %}</p>
       {% endif %}
     {% else %}
     <p class="wizard-empty">图片准备完成后，合成图文稿并执行质量评审。</p>

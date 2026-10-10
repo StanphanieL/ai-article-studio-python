@@ -62,7 +62,7 @@ def test_step_create_api_accepts_an_optional_per_task_config(tmp_path: Path) -> 
     assert config["imageCount"] == 3
 
 
-def test_mock_one_click_workflow_creates_images_review_and_export(tmp_path: Path) -> None:
+def test_mock_one_click_workflow_composes_images_and_exports_before_review(tmp_path: Path) -> None:
     with build_client(tmp_path) as client:
         response = client.post(
             "/api/article/one-click-generate",
@@ -79,8 +79,11 @@ def test_mock_one_click_workflow_creates_images_review_and_export(tmp_path: Path
         logs = client.get(f"/api/article/agent-logs/{article['taskId']}")
 
     assert response.json()["code"] == 0
-    assert article["phase"] == "COMPLETED"
-    assert article["qualityScore"] == 92
+    assert article["phase"] == "ARTICLE_COMPOSITION"
+    assert article["status"] == "SUCCESS"
+    assert article["finalMarkdown"]
+    assert article["qualityScore"] is None
+    assert article["reviewReport"] is None
     assert len(__import__("json").loads(article["imageResults"])) == 3
     assert markdown.status_code == 200 and markdown.headers["content-type"].startswith("text/markdown")
     assert markdown.content.startswith(b"#")
@@ -149,8 +152,9 @@ def test_existing_one_click_api_resumes_the_persisted_failed_substep(tmp_path: P
     assert failed.status_code == 500
     assert failed.json()["data"]["supervisorAction"] == "GENERATE_CONTENT"
     assert resumed.status_code == 200
-    assert resumed.json()["data"]["phase"] == "COMPLETED"
+    assert resumed.json()["data"]["phase"] == "ARTICLE_COMPOSITION"
     assert resumed.json()["data"]["status"] == "SUCCESS"
+    assert resumed.json()["data"]["reviewReport"] is None
 
 
 def test_image_generation_persists_visual_review_and_logs_it_separately(tmp_path: Path) -> None:
@@ -562,7 +566,7 @@ def test_streaming_content_clears_previous_image_and_review_artifacts(tmp_path: 
     assert refreshed["reviewReport"] is None
 
 
-def test_generated_content_is_rewritten_once_before_it_is_saved_when_the_contract_finds_invented_resources(tmp_path: Path) -> None:
+def test_generated_content_preserves_model_text_for_later_explicit_review(tmp_path: Path) -> None:
     class ContractRepairingAgent(MockArticleAgent):
         repair_calls = 0
 
@@ -583,12 +587,12 @@ def test_generated_content_is_rewritten_once_before_it_is_saved_when_the_contrac
         client.app.state.workflow.agent = agent
         generated = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]
 
-    assert agent.repair_calls == 1
-    assert "扫码" not in generated["content"]
-    assert "372 位" not in generated["content"]
+    assert agent.repair_calls == 0
+    assert "扫码领取动作图解库" in generated["content"]
+    assert "372 位体验者" in generated["content"]
 
 
-def test_streaming_content_replaces_the_preview_with_the_contract_repair_before_saving(tmp_path: Path) -> None:
+def test_streaming_content_saves_model_text_without_contract_repair(tmp_path: Path) -> None:
     class ContractRepairingStreamAgent(MockArticleAgent):
         repair_calls = 0
 
@@ -610,9 +614,9 @@ def test_streaming_content_replaces_the_preview_with_the_contract_repair_before_
         stream = client.get(f"/api/article/real-stream-generate-content/{task_id}")
         saved = client.get(f"/api/article/{task_id}").json()["data"]
 
-    assert agent.repair_calls == 1
-    assert "event: content_replace" in stream.text
-    assert saved["content"] == "# 标题\n\n## 第一步\n\n把训练安排写成可自行执行的清单。"
+    assert agent.repair_calls == 0
+    assert "event: content_replace" not in stream.text
+    assert saved["content"] == '# 标题\n\n## 第一步\n\n```json\n{"resource": "扫码领取"}\n```'
 
 
 def test_saving_model_config_resets_downstream_artifacts(tmp_path: Path) -> None:
@@ -637,7 +641,7 @@ def test_saving_model_config_resets_downstream_artifacts(tmp_path: Path) -> None
     assert reset["finalMarkdown"] is None
 
 
-def test_saving_an_identical_model_config_does_not_reset_completed_work(tmp_path: Path) -> None:
+def test_saving_an_identical_model_config_does_not_reset_composed_work(tmp_path: Path) -> None:
     with build_client(tmp_path) as client:
         article = client.post(
             "/api/article/one-click-generate",
@@ -648,12 +652,12 @@ def test_saving_an_identical_model_config_does_not_reset_completed_work(tmp_path
             json={"taskId": article["taskId"], "style": article["style"], "config": json.loads(article["modelConfig"])},
         ).json()["data"]
 
-    assert saved["phase"] == "COMPLETED"
+    assert saved["phase"] == "ARTICLE_COMPOSITION"
     assert saved["content"] == article["content"]
     assert saved["finalMarkdown"] == article["finalMarkdown"]
 
 
-def test_failed_review_is_automatically_repaired_only_once(tmp_path: Path) -> None:
+def test_failed_explicit_review_requires_an_explicit_revision_and_fresh_review(tmp_path: Path) -> None:
     class AlwaysFailReviewAgent(MockArticleAgent):
         def review(self, article: str) -> QualityReviewResult:
             return QualityReviewResult(
@@ -670,16 +674,25 @@ def test_failed_review_is_automatically_repaired_only_once(tmp_path: Path) -> No
             "/api/article/one-click-generate",
             json={"topic": "自动评审修订", "config": {"imageProvider": "MOCK"}},
         )
-        article = response.json()["data"]
-        repeated = client.post(f"/api/article/apply-review-revision/{article['taskId']}")
+        composed = response.json()["data"]
+        reviewed = client.post(f"/api/article/continue-workflow/{composed['taskId']}").json()["data"]
+        revised = client.post(f"/api/article/apply-review-revision/{composed['taskId']}").json()["data"]
+        repeated = client.post(f"/api/article/apply-review-revision/{composed['taskId']}").json()["data"]
 
-    assert article["reviewRound"] == 1
-    assert article["phase"] == "ARTICLE_COMPOSITION"
-    assert article["supervisorAction"] == "MANUAL_REVIEW"
-    assert repeated.json()["data"]["reviewRound"] == 1
+    assert composed["reviewRound"] == 0
+    assert composed["reviewReport"] is None
+    assert reviewed["reviewRound"] == 0
+    assert reviewed["reviewReport"] is not None
+    assert reviewed["phase"] == "ARTICLE_COMPOSITION"
+    assert revised["reviewRound"] == 1
+    assert revised["phase"] == "ARTICLE_COMPOSITION"
+    assert revised["reviewReport"] is None
+    assert revised["finalMarkdown"]
+    assert repeated["reviewRound"] == 1
+    assert repeated["reviewReport"] is None
 
 
-def test_invalid_generated_markdown_is_repaired_before_a_high_scoring_review_can_complete(tmp_path: Path) -> None:
+def test_invalid_generated_markdown_is_preserved_until_explicit_review_blocks_it(tmp_path: Path) -> None:
     class InvalidMarkdownAgent(MockArticleAgent):
         def content(self, topic: str, title: str, outline, style: str, length: str) -> str:  # type: ignore[no-untyped-def]
             return "这段正文故意没有二级标题。"
@@ -689,18 +702,29 @@ def test_invalid_generated_markdown_is_repaired_before_a_high_scoring_review_can
 
     with build_client(tmp_path) as client:
         client.app.state.workflow.agent = InvalidMarkdownAgent()
-        response = client.post(
-            "/api/article/one-click-generate",
-            json={"topic": "高分阻断问题", "config": {"imageProvider": "MOCK"}},
+        task_id = client.post("/api/article/create", json={"topic": "高分阻断问题"}).json()["data"]
+        titles = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]
+        client.post(
+            "/api/article/confirm-title",
+            json={"taskId": task_id, "selectedTitle": json.loads(titles["titleOptions"])[0]["title"]},
         )
+        client.post(f"/api/article/continue-workflow/{task_id}")
+        generated = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]
+        client.app.state.workflow._update(  # noqa: SLF001 - model-only markdown is a deliberate review fixture.
+            task_id,
+            final_markdown=generated["content"],
+            phase="ARTICLE_COMPOSITION",
+            status="SUCCESS",
+        )
+        reviewed = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]
 
-    article = response.json()["data"]
-    review = __import__("json").loads(article["reviewReport"])
-    assert article["qualityScore"] == 94
-    assert article["phase"] == "COMPLETED"
-    assert "##" in article["content"]
-    assert review["passed"] is True
-    assert review["blockingIssues"] == []
+    review = json.loads(reviewed["reviewReport"])
+    assert generated["content"] == "这段正文故意没有二级标题。"
+    assert generated["reviewReport"] is None
+    assert reviewed["qualityScore"] == 94
+    assert reviewed["phase"] == "ARTICLE_COMPOSITION"
+    assert review["passed"] is False
+    assert review["blockingIssues"]
 
 
 def test_review_cannot_complete_when_a_high_score_ignores_an_unsourced_percentage(tmp_path: Path) -> None:

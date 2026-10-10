@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from ._workflow_persistence import safe_error_message as _safe_error_message
 from .domain import WorkflowCancellationRequested, WorkflowExecutionError, WorkflowOperation, WorkflowValidationError
 from .models import Article
-from .schemas import ImageProvider, WorkflowRunMode
+from .schemas import ImageProvider
 from .supervisor import ArticlePhase, ArticleStatus, SupervisorAction, decide_next_action
 
 if TYPE_CHECKING:
@@ -127,14 +127,26 @@ class _WorkflowExecution:
                 if article.phase == ArticlePhase.COMPLETED.value:
                     # ``background_job_execution`` is also used by a few
                     # internal synchronous callers to bypass foreground edit
-                    # guards.  Only a persisted ONE_CLICK runner job should
-                    # remain RUNNING until JobRunner.finish_job(); a direct
-                    # orchestration call is terminal at this point.
-                    if article.status == ArticleStatus.RUNNING.value and article.execution_mode != WorkflowRunMode.ONE_CLICK.value:
+                    # guards. Persisted runner jobs remain RUNNING until
+                    # JobRunner.finish_job(); direct orchestration is terminal.
+                    if article.status == ArticleStatus.RUNNING.value and article.execution_mode is None:
                         return workflow._update(task_id, status=ArticleStatus.SUCCESS.value)
                     return article
                 if article.status == ArticleStatus.FAILED.value:
                     raise WorkflowExecutionError("任务已失败，请通过后台重试继续一键生成")
+                if article.phase == ArticlePhase.ARTICLE_COMPOSITION.value and article.final_markdown:
+                    # Generating (or revising) a delivery draft never grants
+                    # permission to review it. Leave that decision to the user,
+                    # even when a previous review recommends another revision.
+                    if not article.review_report:
+                        article = workflow._record_decision(
+                            task_id,
+                            SupervisorAction.REVIEW_ARTICLE.value,
+                            "图文稿已生成，等待手动审核",
+                        )
+                    if article.status == ArticleStatus.RUNNING.value and article.execution_mode is None:
+                        return workflow._update(task_id, status=ArticleStatus.SUCCESS.value)
+                    return article
                 if article.phase == ArticlePhase.TITLE_SELECTION.value and not article.selected_title:
                     titles = workflow._titles(article)
                     if not titles:

@@ -165,7 +165,7 @@ def test_non_javascript_continue_queues_work_instead_of_waiting_for_a_model_call
     assert len(executor.pending) == 1
 
 
-def test_one_click_job_is_queued_and_tracks_its_real_current_substep(tmp_path: Path) -> None:
+def test_one_click_job_is_queued_and_stops_after_composition(tmp_path: Path) -> None:
     """One-click work must not expose its wrapper action as user-facing progress."""
 
     executor = ManualExecutor()
@@ -178,13 +178,17 @@ def test_one_click_job_is_queued_and_tracks_its_real_current_substep(tmp_path: P
         queued = client.get(f"/article/{task_id}/jobs/status")
         executor.run_all()
         completed = client.get(f"/article/{task_id}/jobs/status")
+        article = client.get(f"/api/article/{task_id}").json()["data"]
 
     assert started.status_code == 202
     assert queued.json()["data"]["status"] == "QUEUED"
     assert queued.json()["data"]["action"] == "GENERATE_TITLES"
     assert queued.json()["data"]["executionMode"] == "ONE_CLICK"
     assert completed.json()["data"]["status"] == "SUCCESS"
-    assert completed.json()["data"]["action"] == "COMPLETE"
+    assert article["phase"] == "ARTICLE_COMPOSITION"
+    assert article["finalMarkdown"]
+    assert article["reviewReport"] is None
+    assert completed.json()["data"]["action"] != "COMPLETE"
 
 
 def test_one_click_stays_running_between_persisted_substeps(tmp_path: Path) -> None:
@@ -223,7 +227,7 @@ def test_one_click_stays_running_between_persisted_substeps(tmp_path: Path) -> N
     assert completed["executionMode"] is None
 
 
-def test_one_click_content_failure_records_real_action_and_retry_resumes_to_completion(tmp_path: Path) -> None:
+def test_one_click_content_failure_records_real_action_and_retry_resumes_to_composition(tmp_path: Path) -> None:
     """A one-click retry continues from the failed substep instead of replaying a wrapper."""
 
     executor = ManualExecutor()
@@ -251,8 +255,9 @@ def test_one_click_content_failure_records_real_action_and_retry_resumes_to_comp
     assert failed["action"] == "GENERATE_CONTENT"
     assert failed["executionMode"] == "ONE_CLICK"
     assert retried.status_code == 202
-    assert resumed["phase"] == "COMPLETED"
+    assert resumed["phase"] == "ARTICLE_COMPOSITION"
     assert resumed["status"] == "SUCCESS"
+    assert resumed["reviewReport"] is None
 
 
 def test_queued_job_is_cancelled_then_permanently_deleted_before_it_runs(tmp_path: Path) -> None:
@@ -415,7 +420,7 @@ def test_failed_job_can_retry_the_persisted_supervisor_action(tmp_path: Path) ->
     assert succeeded.json()["data"]["status"] == "SUCCESS"
 
 
-def test_failed_one_click_job_retries_from_the_real_failed_stage_and_finishes(tmp_path: Path) -> None:
+def test_failed_one_click_job_retries_from_the_real_failed_stage_and_composes(tmp_path: Path) -> None:
     """A one-click retry must resume the orchestration, not replay a stale sub-step."""
 
     executor = ManualExecutor()
@@ -443,8 +448,40 @@ def test_failed_one_click_job_retries_from_the_real_failed_stage_and_finishes(tm
     assert failed["executionMode"] == "ONE_CLICK"
     assert retried.status_code == 202
     assert recovered["status"] == "SUCCESS"
-    assert recovered["phase"] == ArticlePhase.COMPLETED
+    assert recovered["phase"] == ArticlePhase.ARTICLE_COMPOSITION
     assert recovered["content"]
+    assert recovered["reviewReport"] is None
+
+
+def test_failed_explicit_review_job_retries_from_review_action(tmp_path: Path) -> None:
+    executor = ManualExecutor()
+    with build_client(tmp_path, executor) as client:
+        workflow = client.app.state.workflow
+        task_id = workflow.create("交付评审重试", config=ArticleModelConfig(image_provider=ImageProvider.MOCK))
+        with workflow.background_job_execution():
+            composed = workflow.one_click(task_id)
+        original_review = workflow.agent.review
+
+        def fail_review(*_args: object) -> QualityReviewResult:
+            raise RuntimeError("review provider temporarily unavailable")
+
+        workflow.agent.review = fail_review  # type: ignore[method-assign]
+        started = client.post(f"/article/{task_id}/jobs/next")
+        executor.run_all()
+        failed = client.get(f"/article/{task_id}/jobs/status").json()["data"]
+        workflow.agent.review = original_review  # type: ignore[method-assign]
+        retried = client.post(f"/article/{task_id}/jobs/retry")
+        executor.run_all()
+        reviewed = client.get(f"/api/article/{task_id}").json()["data"]
+
+    assert composed.phase == ArticlePhase.ARTICLE_COMPOSITION
+    assert composed.review_report is None
+    assert started.status_code == 202
+    assert failed["status"] == "FAILED"
+    assert failed["action"] == "REVIEW_ARTICLE"
+    assert retried.status_code == 202
+    assert reviewed["reviewReport"] is not None
+    assert reviewed["phase"] == ArticlePhase.COMPLETED
 
 
 def test_review_revision_job_repairs_when_the_model_returns_an_unrecognized_action(tmp_path: Path) -> None:
@@ -462,7 +499,7 @@ def test_review_revision_job_repairs_when_the_model_returns_an_unrecognized_acti
             )
 
         # This test controls the runner with ManualExecutor.  Build the
-        # completed prerequisite directly so the synchronous compatibility
+        # composed prerequisite directly so the synchronous compatibility
         # endpoint does not wait forever for an executor the test has
         # deliberately paused.
         task_id = workflow.create(
@@ -493,7 +530,9 @@ def test_review_revision_job_repairs_when_the_model_returns_an_unrecognized_acti
     assert initial_article.review_round == 0
     assert started.status_code == 202
     assert revised["reviewRound"] == 1
-    assert revised["supervisorAction"] == "MANUAL_REVIEW"
+    assert revised["phase"] == ArticlePhase.ARTICLE_COMPOSITION
+    assert revised["reviewReport"] is None
+    assert revised["supervisorAction"] == "REVIEW_ARTICLE"
 
 
 def test_app_creation_recovers_interrupted_running_jobs(tmp_path: Path) -> None:
@@ -691,7 +730,8 @@ def test_one_click_honors_an_explicit_siliconflow_setting_without_pexels_fallbac
 
     assert providers == [ImageProvider.SILICONFLOW]
     assert completed["status"] == "SUCCESS"
-    assert completed["phase"] == "COMPLETED"
+    assert completed["phase"] == "ARTICLE_COMPOSITION"
+    assert completed["reviewReport"] is None
 
 
 def test_image_batch_keeps_completed_prefix_and_retry_only_generates_missing_image(tmp_path: Path) -> None:

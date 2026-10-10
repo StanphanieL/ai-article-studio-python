@@ -1,6 +1,6 @@
 <div id="workflow-panel" class="wizard-next-action" data-workflow-panel data-job-status-url="{{ job_status_url }}" data-job-detail-url="/article/detail/{{ article.task_id }}" data-job-active="{{ 'true' if article.status in ['QUEUED', 'RUNNING', 'CANCELLING'] else 'false' }}" data-job-running="{{ 'true' if article.status == 'RUNNING' else 'false' }}">
   <div class="wizard-next-action-main">
-    <span class="status {{ article.status|lower }}">{% if article.status == 'QUEUED' %}排队中{% elif article.status == 'RUNNING' %}生成中{% elif article.status == 'CANCELLING' %}正在取消{% elif article.status == 'FAILED' %}需要处理{% elif article.status == 'SUCCESS' %}已准备好{% else %}{{ article.status }}{% endif %}</span>
+    <span class="status {{ article.status|lower }}">{% if article.status == 'QUEUED' %}排队中{% elif article.status == 'RUNNING' %}生成中{% elif article.status == 'CANCELLING' %}正在取消{% elif article.status == 'FAILED' %}需要处理{% elif review_pending %}待审核{% elif article.status == 'SUCCESS' %}已准备好{% else %}{{ article.status }}{% endif %}</span>
     <div class="button-row">
       {% if outline_confirmation_required %}
       <form method="post" action="/article/{{ article.task_id }}/outline" data-pending-form data-outline-confirm-form>
@@ -26,7 +26,7 @@
     {% if show_one_click_utility %}
     <details class="workflow-utilities">
       <summary>更多操作</summary>
-      <form method="post" action="/article/{{ article.task_id }}/one-click" data-job-form data-job-url="/article/{{ article.task_id }}/jobs/one-click"><button class="button secondary" type="submit">一键完成剩余步骤</button></form>
+      <form method="post" action="/article/{{ article.task_id }}/one-click" data-job-form data-job-url="/article/{{ article.task_id }}/jobs/one-click"><button class="button secondary" type="submit">一键生成图文稿</button></form>
     </details>
     {% endif %}
   </div>

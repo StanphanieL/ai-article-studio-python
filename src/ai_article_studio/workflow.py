@@ -313,18 +313,7 @@ class ArticleWorkflow:
                             yield _sse("content", {"content": chunk})
                         if self.cancellation_requested(task_id):
                             raise WorkflowCancellationRequested("任务已请求取消")
-                        candidate = "".join(chunks).strip()
-                        article.content, repaired = self._validated_generated_content(article, candidate, agent)
-                        if repaired:
-                            yield _sse("progress", {"message": "正文通过结构与事实检查后已自动修订"})
-                            yield _sse("content_replace", {"content": article.content})
-                        article.phase = ArticlePhase.CONTENT_GENERATION.value
-                        article.status = ArticleStatus.SUCCESS.value
-                        article.image_prompts = None
-                        article.image_results = None
-                        article.final_markdown = None
-                        article.review_report = None
-                        article.quality_score = None
+                        self._set_content(article, "".join(chunks))
                         article.error_message = None
                         self._log(session, task_id, "ContentGeneratorAgent-RealStream", "stream", article.content, started)
                         session.commit()
@@ -371,7 +360,6 @@ class ArticleWorkflow:
             with self.sessions() as session:
                 article = self._get_article(session, task_id)
                 self._ensure_article_writable(article)
-                self._raise_for_content_contract(article, normalized_content)
                 self._set_content(article, normalized_content)
                 session.commit()
                 session.refresh(article)
@@ -833,8 +821,7 @@ class ArticleWorkflow:
             article.style,
             config.content_length_level.value,
         )
-        article.content, _ = self._validated_generated_content(article, candidate, agent)
-        self._set_content(article, article.content)
+        self._set_content(article, candidate)
         return article.content
 
     def _generate_image_prompts(self, article: Article) -> str:
@@ -1100,47 +1087,15 @@ class ArticleWorkflow:
 
     @staticmethod
     def _set_content(article: Article, content: str) -> None:
-        article.content = content
+        """Persist a draft; quality review is an explicit delivery-stage action."""
+        normalized_content = content.strip()
+        if not normalized_content:
+            raise WorkflowValidationError("正文不能为空")
+        article.content = normalized_content
         article.phase = ArticlePhase.CONTENT_GENERATION.value
         article.status = ArticleStatus.SUCCESS.value
         article.image_prompts = article.image_results = article.final_markdown = None
         article.review_report = article.quality_score = None
-
-    @staticmethod
-    def _content_contract(article: Article, content: str) -> list[str]:
-        return content_contract_issues(
-            content,
-            topic=article.topic,
-            title=article.selected_title or article.topic,
-            style=article.style,
-        )
-
-    def _raise_for_content_contract(self, article: Article, content: str) -> None:
-        issues = self._content_contract(article, content)
-        if issues:
-            raise WorkflowValidationError("正文未通过内容质量检查：" + "；".join(issues))
-
-    def _validated_generated_content(self, article: Article, candidate: str, agent: ArticleAgent) -> tuple[str, bool]:
-        normalized_candidate = candidate.strip()
-        issues = self._content_contract(article, normalized_candidate)
-        if not issues:
-            return normalized_candidate, False
-        repair = getattr(agent, "repair_content", None)
-        if not callable(repair):
-            raise WorkflowValidationError("正文未通过内容质量检查，且当前模型不支持自动修订：" + "；".join(issues))
-        repaired = repair(
-            article.topic,
-            article.selected_title or article.topic,
-            self._outline(article),
-            article.style,
-            self._config(article).content_length_level.value,
-            normalized_candidate,
-            issues,
-        )
-        if not isinstance(repaired, str) or not repaired.strip():
-            raise WorkflowValidationError("正文自动修订未返回有效内容")
-        self._raise_for_content_contract(article, repaired.strip())
-        return repaired.strip(), True
 
     @staticmethod
     def _titles(article: Article) -> list[TitleOption]:

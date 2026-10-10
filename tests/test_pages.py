@@ -831,7 +831,7 @@ def test_one_click_is_an_optional_utility_instead_of_a_competing_primary_cta(tmp
         page = client.get(f"/article/detail/{task_id}")
 
     assert 'class="workflow-utilities"' in page.text
-    assert "一键完成剩余步骤" in page.text
+    assert "一键生成图文稿" in page.text
     assert '<details class="workflow-utilities"' in page.text
 
 
@@ -939,6 +939,58 @@ def test_complete_exports_only_render_in_the_passing_delivery_card(tmp_path: Pat
     detail_head_start = after_review.text.index('<section class="detail-head">')
     detail_head = after_review.text[detail_head_start : after_review.text.index("</section>", detail_head_start)]
     assert "data-final-export" not in detail_head
+
+
+def test_composed_draft_waits_for_manual_review_in_detail_and_live_list(tmp_path: Path) -> None:
+    """A saved composition is an author checkpoint, not a finished article."""
+
+    with build_client(tmp_path) as client:
+        task_id = client.post("/api/article/create", json={"topic": "等待人工审核"}).json()["data"]
+        client.app.state.workflow._update(  # noqa: SLF001 - persisted composed draft fixture.
+            task_id,
+            phase="ARTICLE_COMPOSITION",
+            status="SUCCESS",
+            final_markdown="# 等待人工审核\n\n正文。",
+            review_report=None,
+        )
+        detail = client.get(f"/article/detail/{task_id}")
+        list_page = client.get("/article/list")
+        live_list = client.get("/article/jobs/statuses").json()["data"]
+
+    assert detail.status_code == 200
+    assert 'data-step-card="delivery"' in detail.text
+    assert "待审核" in detail.text
+    assert ">审核图文稿</button>" in detail.text
+    assert "data-final-export" not in detail.text
+    assert f'data-task-id="{task_id}" data-task-state="review_pending"' in list_page.text
+    assert next(item for item in live_list if item["taskId"] == task_id)["label"] == "待审核"
+
+
+def test_one_click_requires_explicit_review_before_page_exports(tmp_path: Path) -> None:
+    with build_client(tmp_path) as client:
+        generated = client.post(
+            "/api/article/one-click-generate",
+            json={"topic": "一键后人工审核", "config": {"imageProvider": "MOCK"}},
+        ).json()["data"]
+        task_id = generated["taskId"]
+        awaiting_review = client.get(f"/article/detail/{task_id}")
+        awaiting_list = client.get("/article/list")
+        awaiting_live_list = client.get("/article/jobs/statuses").json()["data"]
+        reviewed = client.post(f"/api/article/continue-workflow/{task_id}").json()["data"]
+        after_review = client.get(f"/article/detail/{task_id}")
+
+    assert generated["phase"] == "ARTICLE_COMPOSITION"
+    assert generated["status"] == "SUCCESS"
+    assert generated["reviewReport"] is None
+    assert 'data-step-card="delivery"' in awaiting_review.text
+    assert ">审核图文稿</button>" in awaiting_review.text
+    assert f'data-job-url="/article/{task_id}/jobs/next"' in awaiting_review.text
+    assert "data-final-export" not in awaiting_review.text
+    assert f'data-task-id="{task_id}" data-task-state="review_pending"' in awaiting_list.text
+    assert next(item for item in awaiting_live_list if item["taskId"] == task_id)["label"] == "待审核"
+    assert reviewed["reviewReport"] is not None
+    assert reviewed["phase"] == "COMPLETED"
+    assert "data-final-export" in after_review.text
 
 
 def test_outline_and_content_expose_accessible_preview_and_edit_tabs(tmp_path: Path) -> None:
