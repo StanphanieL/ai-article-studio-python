@@ -4,21 +4,23 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable, Iterator
 from typing import TypeVar
 
 import httpx
 from pydantic import ValidationError
 
-from .anchors import image_anchor_catalog, image_visual_brief_catalog
+from ._image_planning import ImagePlanCall, ImagePlanSlot, build_image_plan_slots, completed_image_plan_items, image_plan_prompt, materialize_image_plan
 from .config import Settings
 from .contracts import ArticleAgent
-from .domain import AdapterConfigurationError, AdapterResponseError, AdapterResponseValidationError, AdapterTransportError
+from .domain import AdapterConfigurationError, AdapterError, AdapterResponseError, AdapterResponseValidationError, AdapterTransportError
 from .schemas import (
     ArticleModelConfig,
     ImageLayout,
     ImagePlacement,
     ImagePromptOption,
+    ImageProvider,
     ImageVisualRole,
     OutlineItem,
     QualityReviewResult,
@@ -145,11 +147,13 @@ class OpenAICompatibleArticleAgent(MockArticleAgent):
         self.settings = settings
         self.model_config = model_config or ArticleModelConfig(text_model=settings.openai_model)
         self.client = httpx.Client(timeout=settings.request_timeout_seconds)
+        self.image_plan_diagnostics = ""
 
     def with_model_config(self, model_config: ArticleModelConfig) -> OpenAICompatibleArticleAgent:
         """Return a per-article adapter without mutable cross-task request state."""
 
         configured = OpenAICompatibleArticleAgent(self.settings, model_config)
+        configured.client.close()
         configured.client = self.client
         return configured
 
@@ -162,23 +166,44 @@ class OpenAICompatibleArticleAgent(MockArticleAgent):
             **({"stream": True} if stream else {}),
         }
 
-    def _chat(self, prompt: str) -> str:
+    def _chat(self, prompt: str, *, max_tokens: int | None = None, calls: list[ImagePlanCall] | None = None, stage: str = "") -> str:
+        started = time.perf_counter()
+        succeeded = False
+        input_tokens = output_tokens = None
+        finish_reason = "unknown"
         try:
-            response = self.client.post(
-                _chat_completions_url(self.settings.openai_base_url),
-                headers={"Authorization": f"Bearer {self.settings.openai_api_key.get_secret_value()}"},
-                json=self._request_payload(prompt),
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as error:
-            raise AdapterTransportError("LLM 服务暂不可用，请稍后重试。") from error
-        try:
-            content = response.json().get("choices", [{}])[0].get("message", {}).get("content")
-        except (AttributeError, IndexError, TypeError, ValueError) as error:
-            raise AdapterResponseError("LLM response has no content") from error
-        if not isinstance(content, str) or not content.strip():
-            raise AdapterResponseError("LLM response has no content")
-        return content
+            payload = self._request_payload(prompt)
+            if max_tokens is not None:
+                payload["max_completion_tokens"] = min(max_tokens, self.model_config.max_completion_tokens)
+            try:
+                response = self.client.post(
+                    _chat_completions_url(self.settings.openai_base_url),
+                    headers={"Authorization": f"Bearer {self.settings.openai_api_key.get_secret_value()}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+            except httpx.HTTPError as error:
+                raise AdapterTransportError("LLM 服务暂不可用，请稍后重试。") from error
+            try:
+                data = response.json()
+                choice = data.get("choices", [{}])[0]
+                content = choice.get("message", {}).get("content")
+                reason = choice.get("finish_reason")
+                if reason in ("stop", "length", "content_filter", "tool_calls"):
+                    finish_reason = reason
+                usage = data.get("usage")
+                if isinstance(usage, dict):
+                    input_tokens = _usage_count(usage.get("prompt_tokens"))
+                    output_tokens = _usage_count(usage.get("completion_tokens"))
+            except (AttributeError, IndexError, TypeError, ValueError) as error:
+                raise AdapterResponseError("LLM response has no content") from error
+            if not isinstance(content, str) or not content.strip():
+                raise AdapterResponseError("LLM response has no content")
+            succeeded = True
+            return content
+        finally:
+            if calls is not None:
+                calls.append(ImagePlanCall(stage, int((time.perf_counter() - started) * 1000), succeeded, input_tokens, output_tokens, finish_reason))
 
     def _json(
         self,
@@ -262,46 +287,78 @@ class OpenAICompatibleArticleAgent(MockArticleAgent):
         return self._chat(_content_repair_prompt(topic, title, outline, style, length, draft, violations))
 
     def image_prompts(self, topic: str, title: str, content: str, style: str, count: int) -> list[ImagePromptOption]:
-        def validate_plan_count(payload: object) -> list[ImagePromptOption]:
-            plans = _generated_image_prompt_options(payload)
-            if len(plans) != count:
-                raise ValueError(f"expected exactly {count} image prompts, received {len(plans)}")
-            _validate_visual_grounding(plans, f"{topic}\n{title}\n{content}")
-            return plans
+        slots = build_image_plan_slots(content, count)
+        stock_search = self.model_config.image_provider in {ImageProvider.AUTO, ImageProvider.PEXELS}
+        accepted: dict[str, ImagePromptOption] = {}
+        problems: dict[str, str] = {}
+        calls: list[ImagePlanCall] = []
+        local_seconds = 0.0
+        self.image_plan_diagnostics = ""
 
-        prompts = self._json(
-            f"根据文章“{title}”生成严格 {count} 个语义配图方案，第一项必须为封面。\n"
-            "图片不得包含二维码、下载/课程宣称、虚构数据背书、大段文字、Logo 或水印。\n"
-            "每张图必须解释一个明确论点，而不是只为章节装饰：先从下方“段落视觉简报”选择锚点，再把该段的因果、对比、过程或具体对象转成可见画面。"
-            "usageScene 必须用一句话说明“这张图让读者看懂哪一个关系”，不得写“第几节配图”“科研感场景”之类的空话。"
-            "所选段落中的至少一个具体对象、动作或关系必须进入 promptZh 和 promptEn；两种提示词必须描述同一画面，"
-            "不能把段落的论点改写成无关的通用办公、实验室、设备或科技背景。"
-            "promptZh 与 promptEn 都必须写出可见主体、主体之间的动作/关系、环境或构图、画面风格，并明确 no text/no logo/no watermark；"
-            "不得使用“抽象概念图、专业场景、科技感背景、实验室氛围”等无法直接生成的泛化描述。\n"
-            "角色选择规则：SCENE 只能用于锚点中明确出现的人物、地点或实物场景；机制、方法、判断条件、流程和限制优先使用 DIAGRAM、COMPARISON 或 CONCEPT；"
-            "DATA 只能在锚点确有数据关系时使用。除非文章或所选段落明确提到，否则不得凭空加入实验室、XRD/衍射、显微镜、医疗设备、仪器屏幕或任何具体行业设备。\n"
-            "例如，抽象的“可重复性失效”应画成同一流程反复运行后的分叉、偏离或对照关系，不可擅自画实验室设备。\n"
-            "避免每个二级标题后都机械地放图；短章节可以没有图片，长章节最多两张，不得让图片相邻。"
-            "同一数组内每个 visualRole 必须唯一：封面后每项都必须选择尚未使用的视觉角色。"
-            "visualRole 只能是 COVER、SCENE、CONCEPT、DIAGRAM、COMPARISON、DETAIL、DATA、CLOSING；"
-            "placement 只能是 COVER、AFTER_INTRO、AFTER_PARAGRAPH、SECTION_END。封面必须使用 COVER/COVER/HERO，"
-            "下面的“段落视觉简报”由系统按最终 Markdown 解析，是唯一权威来源。AFTER_PARAGRAPH 只能从该目录对应标题的段落号中选择；"
-            "若不能精确定位段落，必须改用 SECTION_END 且 anchorParagraph=0。不得自行为换行、列表或代码块计数，也不得编造标题。"
-            "layout 只能是 HERO、WIDE、STANDARD、COMPACT。stockQuery 只用于 Pexels 照片检索，必须是 2-5 个小写 ASCII 英文词，"
-            "只允许字母和单个空格，必须是 promptEn 中真实可见主体/场景的英文关键词；绝不能写抽象词、中文、标点、连字符或完整句子。"
-            "DIAGRAM、DATA 等不适合图库照片的方案必须返回空字符串。\n"
-            "只返回 JSON 数组，每项必须含 imageTitle、usageScene、promptZh、promptEn、visualRole、placement、"
-            "anchorHeading、anchorParagraph、layout、stockQuery。\n"
-            f"可用锚点目录：\n{image_anchor_catalog(content)}\n\n段落视觉简报：\n{image_visual_brief_catalog(content)}\n\n文章：{content}",
-            validator=validate_plan_count,
-            schema=(
-                "JSON 数组；每项严格含 imageTitle、usageScene、promptZh、promptEn、visualRole、placement、"
-                "anchorHeading、anchorParagraph、layout、stockQuery。visualRole、placement、layout 必须使用允许的枚举值；"
-                "同一数组的 visualRole 不得重复；anchorParagraph 是非负整数；"
-                f"stockQuery 仅可为空（DIAGRAM）或 2-5 个 ASCII 英文词；数组长度必须严格为 {count}。"
-            ),
-        )
-        return prompts
+        def collect(raw: str, requested: list[ImagePlanSlot], *, repair: bool = False) -> None:
+            nonlocal local_seconds
+            started = time.perf_counter()
+            by_id = {slot.slot_id: slot for slot in requested}
+            for index, item in enumerate(completed_image_plan_items(raw)):
+                # Legacy full records are still accepted in their requested
+                # order only on the initial request. A partial repair must
+                # have IDs, otherwise a repeated full array can shift images
+                # into unrelated sections.
+                slot_id = item.get("slotId", item.get("slot_id"))
+                if slot_id is None and not repair and index < len(requested):
+                    slot_id = requested[index].slot_id
+                if not isinstance(slot_id, str) or slot_id not in by_id or slot_id in accepted:
+                    continue
+                slot = by_id[slot_id]
+                try:
+                    plan = _normalize_stock_query(materialize_image_plan(item, slot))
+                    _validate_visual_grounding([plan], f"{topic}\n{title}\n{slot.heading}\n{slot.excerpt}")
+                except ValueError as error:
+                    problems[slot_id] = str(error)
+                    continue
+                accepted[slot_id] = plan
+                problems.pop(slot_id, None)
+            local_seconds += time.perf_counter() - started
+
+        def request(requested: list[ImagePlanSlot], *, repair: bool = False) -> str:
+            return self._chat(
+                image_plan_prompt(topic, title, style, requested, stock_search=stock_search, problems=problems if repair else None),
+                max_tokens=max(1024, len(requested) * 640 + 256),
+                calls=calls,
+                stage="局部修复" if repair else "首次生成",
+            )
+
+        def diagnostics() -> str:
+            parts = [f"有效方案 {len(accepted)}/{len(slots)}"]
+            if len(slots) < count:
+                parts.append(f"请求 {count} 张，按可用位置调整为 {len(slots)} 张")
+            parts.extend(call.summary() for call in calls)
+            parts.append(f"本地解析校验 {local_seconds * 1000:.1f}ms")
+            self.image_plan_diagnostics = "；".join(parts)
+            return self.image_plan_diagnostics
+
+        try:
+            collect(request(slots), slots)
+            missing = [slot for slot in slots if slot.slot_id not in accepted]
+            if missing:
+                for slot in missing:
+                    problems.setdefault(slot.slot_id, "缺失或未完整输出，请补全")
+                try:
+                    collect(request(missing, repair=True), missing, repair=True)
+                except AdapterError:
+                    # A failed optional repair must not erase paid-for valid
+                    # descriptions. Keep them if cover + a body plan survive.
+                    if "cover" not in accepted or (len(slots) > 1 and len(accepted) < 2):
+                        raise
+            if "cover" not in accepted:
+                raise AdapterResponseValidationError("配图方案缺少有效封面；已尝试局部修复，请重试。")
+            if len(slots) > 1 and len(accepted) < 2:
+                raise AdapterResponseValidationError("正文配图方案未生成有效内容；已保留本次诊断，请重试。")
+        except AdapterError as error:
+            error.diagnostics = diagnostics()
+            raise
+        diagnostics()
+        return [accepted[slot.slot_id] for slot in slots if slot.slot_id in accepted]
 
     def review(self, article: str) -> QualityReviewResult:
         return self._json(
@@ -321,6 +378,10 @@ class OpenAICompatibleArticleAgent(MockArticleAgent):
 
 def create_article_agent(settings: Settings) -> ArticleAgent:
     return MockArticleAgent() if settings.app_mode.value == "mock" else OpenAICompatibleArticleAgent(settings)
+
+
+def _usage_count(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
 
 
 def _parse_json_payload(raw: str) -> object:

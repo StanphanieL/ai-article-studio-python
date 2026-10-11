@@ -32,15 +32,22 @@ class _WorkflowImages:
             raise WorkflowValidationError("请先生成正文")
         config = workflow._config(article)
         count = config.image_count if config.image_count_mode is ImageCountMode.CUSTOM else calculate_image_count(article.content)
-        prompts = workflow._agent_for(article).image_prompts(article.topic, article.selected_title, article.content, article.style, count or 3)
+        agent = workflow._agent_for(article)
+        prompts = agent.image_prompts(article.topic, article.selected_title, article.content, article.style, count or 3)
+        validation_started = time.perf_counter()
         prompts, adjusted = workflow._normalize_generated_image_plan(article.content, prompts)
         workflow._validate_image_plan_contract(article.content, prompts)
+        validation_ms = (time.perf_counter() - validation_started) * 1000
         article.image_prompts = json.dumps([item.model_dump(by_alias=True) for item in prompts], ensure_ascii=False)
         article.image_results = article.final_markdown = None
         article.review_report = article.quality_score = None
         article.phase = ArticlePhase.CONTENT_GENERATION.value
         article.status = ArticleStatus.SUCCESS.value
-        return "配图方案已生成" + (f"；已自动校准 {adjusted} 项图片编排" if adjusted else "")
+        summary = "配图方案已生成" + (f"；已自动校准 {adjusted} 项图片编排" if adjusted else "")
+        diagnostics = getattr(agent, "image_plan_diagnostics", "")
+        if isinstance(diagnostics, str) and diagnostics:
+            summary += f"；{diagnostics}；布局校验 {validation_ms:.1f}ms"
+        return summary
 
     def generate_images_incrementally(self, task_id: str, requested_provider: ImageProvider) -> None:
         """Generate and persist each asset at an independent recovery boundary.

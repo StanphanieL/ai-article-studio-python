@@ -88,12 +88,17 @@ class MissingProvider:
 
 
 def calculate_image_count(content: str) -> int:
-    """Use article structure or length, then clamp to the supported UI range."""
+    """Estimate from prose length, then clamp to the supported UI range."""
 
-    heading_count = len(re.findall(r"(?m)^##\s+.+$", content or ""))
-    compact_length = len(re.sub(r"\s+", "", content or ""))
+    prose = re.sub(
+        r"(?ms)^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?^ {0,3}\1[ \t]*(?=\n|$)",
+        "",
+        content or "",
+    )
+    prose = re.sub(r"(?m)^ {0,3}#{1,6}[ \t]+[^\n]*$", "", prose)
+    compact_length = len(re.sub(r"\s+", "", prose))
     by_length = math.ceil(compact_length / CHARS_PER_IMAGE) if compact_length else 0
-    return max(MIN_IMAGE_COUNT, min(MAX_IMAGE_COUNT, max(heading_count + 1, by_length + 1)))
+    return max(MIN_IMAGE_COUNT, min(MAX_IMAGE_COUNT, by_length + 1))
 
 
 def fallback_image(prompt: ImagePromptOption, index: int, *, reason: str = "") -> ImageResultOption:

@@ -4,19 +4,9 @@ from __future__ import annotations
 
 import json
 
-from .anchors import heading_key, image_anchor_excerpt, markdown_anchor_sections
+from .anchors import MarkdownAnchorSection, heading_key, image_anchor_excerpt, markdown_anchor_sections
 from .domain import WorkflowValidationError
 from .schemas import ImagePlacement, ImagePromptOption, ImageResultOption, ImageVisualRole
-
-_GENERATED_ROLE_FALLBACK_ORDER = (
-    ImageVisualRole.CONCEPT,
-    ImageVisualRole.DIAGRAM,
-    ImageVisualRole.SCENE,
-    ImageVisualRole.COMPARISON,
-    ImageVisualRole.DETAIL,
-    ImageVisualRole.DATA,
-    ImageVisualRole.CLOSING,
-)
 
 
 def normalize_generated_image_plan(
@@ -26,19 +16,19 @@ def normalize_generated_image_plan(
     """Repair recoverable model output before applying hard invariants.
 
     A planner receives an authoritative catalogue, but a model can still
-    mistake a wrapped line for a second paragraph or reuse an otherwise
-    valid visual role. Neither should turn a harmless planning variation
-    into a failed one-click article. User edits deliberately bypass this
-    method and remain strict.
+    mistake a wrapped line for a second paragraph or over-request images
+    for one insertion point. Preserve the image meaning while repairing or
+    reducing generated plans; user edits deliberately bypass this method.
     """
 
     sections = markdown_anchor_sections(content)
-    by_key: dict[str, object] = {}
+    by_key: dict[str, MarkdownAnchorSection] = {}
     for section in sections:
         by_key.setdefault(section.key, section)
     normalized: list[ImagePromptOption] = []
     adjusted_indices: set[int] = set()
     fallback_cursor = 0
+    known_sections: list[bool] = []
 
     def choose_fallback(excluded: set[str]) -> tuple[str, int, ImagePlacement]:
         nonlocal fallback_cursor
@@ -57,12 +47,13 @@ def normalize_generated_image_plan(
     previous_anchor = ""
     for index, plan in enumerate(plans):
         original = plan
+        section = by_key.get(heading_key(plan.anchor_heading)) if plan.placement not in {ImagePlacement.COVER, ImagePlacement.AFTER_INTRO} else None
+        known_sections.append(section is not None)
         if plan.placement is ImagePlacement.COVER:
             plan = plan.model_copy(update={"placement": ImagePlacement.COVER, "anchor_heading": "", "anchor_paragraph": 0})
         elif plan.placement is ImagePlacement.AFTER_INTRO:
             plan = plan.model_copy(update={"anchor_heading": "", "anchor_paragraph": 0})
         else:
-            section = by_key.get(heading_key(plan.anchor_heading))
             if section is None:
                 heading, paragraph, placement = choose_fallback({previous_anchor})
                 plan = plan.model_copy(update={"anchor_heading": heading, "anchor_paragraph": paragraph, "placement": placement})
@@ -86,28 +77,65 @@ def normalize_generated_image_plan(
         normalized.append(plan)
         previous_anchor = image_anchor_key(plan)
 
-    # ``visual_role`` is presentation metadata, not a structural anchor.
-    # The model is told to keep it unique, but repairing a duplicate here
-    # is safer than failing before any image-provider call. COVER remains
-    # deliberately strict: a missing, duplicated, or misplaced cover is a
-    # structural error that must be shown to the user rather than guessed.
-    used_roles: set[ImageVisualRole] = set()
-    role_normalized: list[ImagePromptOption] = []
-    for index, plan in enumerate(normalized):
-        if plan.visual_role in used_roles and plan.visual_role is not ImageVisualRole.COVER:
-            replacement = replacement_visual_role(plan, used_roles)
-            if replacement is not None:
-                plan = plan.model_copy(update={"visual_role": replacement})
-                adjusted_indices.add(index)
-        role_normalized.append(plan)
-        used_roles.add(plan.visual_role)
+    occupied: set[str] = set()
     grounded: list[ImagePromptOption] = []
-    for index, plan in enumerate(role_normalized):
+    for index, plan in enumerate(normalized):
+        # Keep every cover-shaped item for the strict cover validator below.
+        # Never silently discard a malformed or second cover.
+        if plan.placement is not ImagePlacement.COVER:
+            anchor = _visual_insertion_key(plan, by_key)
+            if anchor in occupied:
+                if plan.placement is ImagePlacement.AFTER_INTRO:
+                    candidates = []
+                elif known_sections[index]:
+                    candidates = [by_key[heading_key(plan.anchor_heading)]]
+                else:
+                    candidates = sections
+                replacement = next(
+                    (
+                        candidate
+                        for section in candidates
+                        for candidate in _alternate_section_anchors(plan, section)
+                        if _visual_insertion_key(candidate, by_key) not in occupied
+                    ),
+                    None,
+                )
+                if replacement is None:
+                    adjusted_indices.add(index)
+                    continue
+                plan = replacement
+                adjusted_indices.add(index)
+                anchor = _visual_insertion_key(plan, by_key)
+            occupied.add(anchor)
         evidence_bound = with_anchor_excerpt(content, plan)
         if evidence_bound != plan:
             adjusted_indices.add(index)
         grounded.append(evidence_bound)
     return grounded, len(adjusted_indices)
+
+
+def _visual_insertion_key(plan: ImagePromptOption, sections_by_key: dict[str, MarkdownAnchorSection]) -> str:
+    """Use the rendered position, where section end equals its final paragraph."""
+
+    key = image_anchor_key(plan)
+    if plan.placement is ImagePlacement.SECTION_END:
+        section = sections_by_key.get(heading_key(plan.anchor_heading))
+        if section is not None and section.paragraphs:
+            return f"paragraph:{section.key}:{len(section.paragraphs)}"
+    return key
+
+
+def _alternate_section_anchors(plan: ImagePromptOption, section: MarkdownAnchorSection) -> list[ImagePromptOption]:
+    """Offer the closest real paragraph positions without changing section or role."""
+
+    count = len(section.paragraphs)
+    if not count:
+        return [plan.model_copy(update={"placement": ImagePlacement.SECTION_END, "anchor_heading": section.heading, "anchor_paragraph": 0})]
+    preferred = plan.anchor_paragraph if plan.placement is ImagePlacement.AFTER_PARAGRAPH else count
+    return [
+        plan.model_copy(update={"placement": ImagePlacement.AFTER_PARAGRAPH, "anchor_heading": section.heading, "anchor_paragraph": paragraph})
+        for paragraph in sorted(range(1, count + 1), key=lambda number: (abs(number - preferred), number))
+    ]
 
 
 def with_anchor_excerpt(content: str, plan: ImagePromptOption) -> ImagePromptOption:
@@ -125,53 +153,9 @@ def with_anchor_excerpt(content: str, plan: ImagePromptOption) -> ImagePromptOpt
     )
 
 
-def replacement_visual_role(
-    plan: ImagePromptOption,
-    used_roles: set[ImageVisualRole],
-) -> ImageVisualRole | None:
-    """Choose a deterministic unused role for a duplicated model plan.
+def replacement_visual_role(plan: ImagePromptOption, used_roles: set[ImageVisualRole]) -> ImageVisualRole | None:
+    """Compatibility hook: repeated roles are valid and never need replacing."""
 
-    The role remains meaningful for AUTO provider routing, so first prefer
-    candidates indicated by the image's title, scene, or prompts. The
-    stable fallback order makes retries reproducible when the text offers
-    no useful hint.
-    """
-
-    semantic_text = " ".join((plan.image_title, plan.usage_scene, plan.prompt_zh, plan.prompt_en)).casefold()
-    preferred: list[ImageVisualRole] = []
-
-    def add_if_matches(role: ImageVisualRole, keywords: tuple[str, ...]) -> None:
-        if any(keyword in semantic_text for keyword in keywords):
-            preferred.append(role)
-
-    add_if_matches(
-        ImageVisualRole.DIAGRAM,
-        ("diagram", "flow", "workflow", "architecture", "interface", "ui", "图解", "流程", "架构", "界面", "信息图"),
-    )
-    add_if_matches(
-        ImageVisualRole.DATA,
-        ("data", "chart", "metric", "dashboard", "数据", "图表", "指标", "看板"),
-    )
-    add_if_matches(
-        ImageVisualRole.COMPARISON,
-        ("compare", "comparison", "versus", "对比", "比较", "前后"),
-    )
-    add_if_matches(
-        ImageVisualRole.SCENE,
-        ("scene", "photo", "portrait", "people", "人物", "场景", "照片"),
-    )
-    add_if_matches(
-        ImageVisualRole.DETAIL,
-        ("detail", "closeup", "局部", "细节", "特写"),
-    )
-    add_if_matches(
-        ImageVisualRole.CLOSING,
-        ("closing", "conclusion", "ending", "结尾", "结语", "收束"),
-    )
-
-    for candidate in (*preferred, *_GENERATED_ROLE_FALLBACK_ORDER):
-        if candidate not in used_roles:
-            return candidate
     return None
 
 
@@ -219,12 +203,9 @@ def validate_image_plan_contract(content: str, plans: list[ImagePromptOption]) -
     if plans[0].placement is not ImagePlacement.COVER or any(plan.placement is ImagePlacement.COVER for plan in plans[1:]):
         raise WorkflowValidationError("封面图必须使用 COVER 位置，且其他配图不能使用 COVER 位置")
 
-    roles = [plan.visual_role for plan in plans]
-    if len(set(roles)) != len(roles):
-        raise WorkflowValidationError("同一配图方案中的视觉角色不能重复")
-
+    by_key = {section.key: section for section in markdown_anchor_sections(content)}
     for previous, current in zip(plans, plans[1:]):
-        if image_anchor_key(previous) == image_anchor_key(current):
+        if _visual_insertion_key(previous, by_key) == _visual_insertion_key(current, by_key):
             raise WorkflowValidationError("相邻配图不能使用同一锚点")
 
 

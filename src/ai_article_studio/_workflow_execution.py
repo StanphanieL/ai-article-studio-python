@@ -12,7 +12,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ._workflow_persistence import safe_error_message as _safe_error_message
-from .domain import WorkflowCancellationRequested, WorkflowExecutionError, WorkflowOperation, WorkflowValidationError
+from .domain import AdapterError, WorkflowCancellationRequested, WorkflowExecutionError, WorkflowOperation, WorkflowValidationError
 from .models import Article
 from .schemas import ImageProvider
 from .supervisor import ArticlePhase, ArticleStatus, SupervisorAction, decide_next_action
@@ -205,6 +205,7 @@ class _WorkflowExecution:
                 except Exception as error:
                     article.status = ArticleStatus.FAILED.value
                     article.error_message = _safe_error_message(error)
-                    workflow._log(session, task_id, agent_name, "input managed by workflow", None, started, error)
+                    diagnostics = error.diagnostics if isinstance(error, AdapterError) else None
+                    workflow._log(session, task_id, agent_name, "input managed by workflow", diagnostics, started, error)
                     session.commit()
                     raise

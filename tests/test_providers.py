@@ -360,12 +360,35 @@ def test_real_image_clients_inherit_the_configured_request_timeout(tmp_path) -> 
     assert service.providers[ImageProvider.GOOGLE_AI].client.timeout.connect == 123  # type: ignore[union-attr]
 
 
-def test_image_count_uses_headings_or_content_length_and_clamps() -> None:
+def test_image_count_defaults_to_three_for_empty_content() -> None:
     from ai_article_studio.providers import calculate_image_count
 
+    assert calculate_image_count("") == 3
     assert calculate_image_count("short") == 3
-    assert calculate_image_count("## 一\n内容\n## 二\n内容") == 3
+
+
+def test_image_count_short_article_with_many_headings_stays_at_three() -> None:
+    from ai_article_studio.providers import calculate_image_count
+
+    article = "\n".join(f"## 第{index}节\n" + "字" * 320 for index in range(5))
+
+    assert calculate_image_count(article) == 3
+
+
+def test_image_count_grows_with_prose_length_and_clamps_at_eight() -> None:
+    from ai_article_studio.providers import calculate_image_count
+
+    assert calculate_image_count("字" * 2_701) == 5
+    assert calculate_image_count("字" * 5_401) == 8
     assert calculate_image_count("字" * 10_000) == 8
+
+
+def test_image_count_ignores_fenced_code_instead_of_treating_it_as_prose() -> None:
+    from ai_article_studio.providers import calculate_image_count
+
+    article = "开头" + "\n```python\n" + "# 代码\n" * 2_000 + "```\n结尾"
+
+    assert calculate_image_count(article) == 3
 
 
 def test_pexels_provider_maps_provider_response_to_attributed_image() -> None:

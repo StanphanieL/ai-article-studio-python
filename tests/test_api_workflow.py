@@ -431,7 +431,7 @@ def test_existing_image_plan_is_lazily_bound_to_its_article_excerpt_before_gener
     assert result["anchorExcerpt"] == prompt["anchorExcerpt"]
 
 
-def test_generated_image_plan_enforces_cover_role_and_anchor_invariants(tmp_path: Path) -> None:
+def test_generated_image_plan_enforces_cover_role_invariants(tmp_path: Path) -> None:
     def cover() -> ImagePromptOption:
         return ImagePromptOption(
             image_title="封面",
@@ -454,10 +454,7 @@ def test_generated_image_plan_enforces_cover_role_and_anchor_invariants(tmp_path
             anchor_paragraph=1,
         )
 
-    invalid_plans = [
-        ([section(ImageVisualRole.CONCEPT, "第一节"), cover()], "封面图必须位于配图方案第 1 项"),
-        ([cover(), section(ImageVisualRole.CONCEPT, "第一节"), section(ImageVisualRole.DIAGRAM, "第一节")], "相邻配图不能使用同一锚点"),
-    ]
+    invalid_plans = [([section(ImageVisualRole.CONCEPT, "第一节"), cover()], "封面图必须位于配图方案第 1 项")]
     with build_client(tmp_path) as client:
         workflow = client.app.state.workflow
         for index, (plans, expected_error) in enumerate(invalid_plans):
@@ -479,7 +476,53 @@ def test_generated_image_plan_enforces_cover_role_and_anchor_invariants(tmp_path
             assert saved["imagePrompts"] is None
 
 
-def test_generated_image_plan_repairs_duplicate_roles_but_manual_edits_remain_strict(tmp_path: Path) -> None:
+def test_generated_image_plan_deduplicates_colliding_anchor_before_persistence(tmp_path: Path) -> None:
+    content = "# 标题\n\n## 第一节\n\n唯一段落。\n\n## 第二节\n\n另一段落。"
+    plans = [
+        ImagePromptOption(
+            image_title="封面", usage_scene="封面", prompt_zh="封面", prompt_en="cover", visual_role=ImageVisualRole.COVER, placement=ImagePlacement.COVER
+        ),
+        ImagePromptOption(
+            image_title="保留图",
+            usage_scene="第一节",
+            prompt_zh="图解",
+            prompt_en="diagram",
+            visual_role=ImageVisualRole.DIAGRAM,
+            placement=ImagePlacement.AFTER_PARAGRAPH,
+            anchor_heading="第一节",
+            anchor_paragraph=1,
+        ),
+        ImagePromptOption(
+            image_title="冲突图",
+            usage_scene="第一节",
+            prompt_zh="图解",
+            prompt_en="diagram",
+            visual_role=ImageVisualRole.DIAGRAM,
+            placement=ImagePlacement.SECTION_END,
+            anchor_heading="第一节",
+        ),
+    ]
+
+    with build_client(tmp_path) as client:
+        workflow = client.app.state.workflow
+        task_id = client.post("/api/article/create", json={"topic": "锚点冲突"}).json()["data"]
+        workflow._update(  # noqa: SLF001 - establish the generated plan's real anchor catalogue.
+            task_id,
+            selected_title="锚点冲突",
+            content=content,
+            phase="CONTENT_GENERATION",
+            status="SUCCESS",
+        )
+        workflow.agent.image_prompts = lambda *_args: plans  # type: ignore[method-assign]
+        generated = client.post(f"/api/article/generate-image-prompts/{task_id}")
+        saved = client.get(f"/api/article/{task_id}").json()["data"]
+
+    assert generated.status_code == 200
+    assert saved["status"] == "SUCCESS"
+    assert [prompt["imageTitle"] for prompt in json.loads(saved["imagePrompts"])] == ["封面", "保留图"]
+
+
+def test_generated_image_plan_preserves_duplicate_non_cover_roles_and_manual_position_edit_remains_strict(tmp_path: Path) -> None:
     def cover() -> ImagePromptOption:
         return ImagePromptOption(
             image_title="封面",
@@ -525,12 +568,17 @@ def test_generated_image_plan_repairs_duplicate_roles_but_manual_edits_remain_st
             json={**prompts[2], "visualRole": prompts[1]["visualRole"]},
             headers={"accept": "application/json"},
         )
+        manual_collision = client.post(
+            f"/article/{task_id}/image-plan/2",
+            json={**prompts[2], "placement": "SECTION_END", "anchorHeading": "第一节", "anchorParagraph": 0},
+            headers={"accept": "application/json"},
+        )
 
     assert generated.status_code == 200
-    assert len({prompt["visualRole"] for prompt in prompts}) == len(prompts)
-    assert prompts[2]["visualRole"] == "DIAGRAM"
-    assert manual_duplicate.status_code == 400
-    assert "视觉角色不能重复" in manual_duplicate.json()["message"]
+    assert [prompt["visualRole"] for prompt in prompts] == ["COVER", "CONCEPT", "CONCEPT"]
+    assert manual_duplicate.status_code == 200
+    assert manual_collision.status_code == 400
+    assert "相邻配图不能使用同一锚点" in manual_collision.json()["message"]
 
 
 def test_streaming_content_saves_article_and_emits_content_then_done(tmp_path: Path) -> None:

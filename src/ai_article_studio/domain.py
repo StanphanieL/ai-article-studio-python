@@ -50,6 +50,9 @@ class JobAlreadyRunning(WorkflowExecutionError):
 class AdapterError(WorkflowExecutionError):
     """A safe, normalised failure at an external LLM or image-provider boundary."""
 
+    # Optional adapter-owned timing/counter summary, never raw provider text.
+    diagnostics: str = ""
+
 
 class AdapterConfigurationError(AdapterError):
     """An explicitly selected provider is unavailable because it is unconfigured."""

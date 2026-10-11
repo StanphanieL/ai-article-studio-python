@@ -12,7 +12,7 @@ def plan(**values):
     return ImagePromptOption(image_title="配图", usage_scene="正文", prompt_zh="图", prompt_en="image", **values)
 
 
-def test_generated_plan_repairs_anchor_and_role_without_mutating_input():
+def test_generated_plan_repairs_anchor_without_changing_role_or_input():
     from ai_article_studio._workflow_image_plan import normalize_generated_image_plan, validate_image_plan_contract
 
     content = "# 标题\n\n导语。\n\n## 验证\n\n第一段。\n\n第二段。"
@@ -34,7 +34,7 @@ def test_generated_plan_repairs_anchor_and_role_without_mutating_input():
     assert adjusted == 3
     assert normalized[2].anchor_paragraph == 2
     assert normalized[2].anchor_excerpt == "第二段。"
-    assert normalized[2].visual_role is ImageVisualRole.DIAGRAM
+    assert normalized[2].visual_role is ImageVisualRole.CONCEPT
     validate_image_plan_contract(content, normalized)
     assert normalize_generated_image_plan(content, normalized) == (normalized, 0)
 

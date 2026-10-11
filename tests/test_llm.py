@@ -234,7 +234,7 @@ def test_mock_image_plans_cover_the_full_eight_image_limit_without_reusing_roles
     assert ImageVisualRole.DATA in {plan.visual_role for plan in plans}
 
 
-def test_real_image_plan_prompt_requires_semantic_metadata() -> None:
+def test_real_image_plan_prompt_uses_compact_grounded_briefs_and_server_placement() -> None:
     captured: list[str] = []
     response = (
         '[{"imageTitle":"封面","usageScene":"文章封面","promptZh":"封面","promptEn":"cover",'
@@ -255,11 +255,12 @@ def test_real_image_plan_prompt_requires_semantic_metadata() -> None:
     assert plans[0].placement == "COVER"
     assert plans[0].stock_query == "design workspace"
     assert "visualRole" in captured[0]
-    assert "visualRole 必须唯一" in captured[0]
+    assert "非封面角色可以重复" in captured[0]
     assert "stockQuery" in captured[0]
-    assert "可用锚点目录" in captured[0]
-    assert "段落视觉简报" in captured[0]
-    assert "第 1 段：One paragraph." in captured[0]
+    assert "slotId" in captured[0]
+    assert "anchorParagraph" not in captured[0]
+    assert "正文摘录" in captured[0]
+    assert "One paragraph." in captured[0]
     assert "不得凭空加入实验室、XRD/衍射" in captured[0]
     assert "Foundations" in captured[0]
 
@@ -276,7 +277,7 @@ def test_real_image_plan_repairs_a_specific_scene_that_the_article_never_mention
                 '"layout":"HERO","stockQuery":"laboratory xrd equipment"}]'
             ),
             (
-                '[{"imageTitle":"重复流程的偏离","usageScene":"让读者看懂同一流程重复运行后出现偏离",'
+                '[{"slotId":"cover","imageTitle":"重复流程的偏离","usageScene":"让读者看懂同一流程重复运行后出现偏离",'
                 '"promptZh":"俯视视角，同一套简洁流程卡片连续重复三次，第三次路径向右分叉偏离，留白背景，no text，no logo，no watermark",'
                 '"promptEn":"top down repeated process cards with the third path branching right, clean editorial diagram, no text, no logo, no watermark",'
                 '"visualRole":"COVER","placement":"COVER","anchorHeading":"","anchorParagraph":0,'
@@ -306,7 +307,7 @@ def test_real_image_plan_repairs_a_specific_scene_that_the_article_never_mention
     assert plans[0].stock_query == "repeated process branching"
 
 
-def test_real_image_plan_repairs_a_valid_plan_with_the_wrong_number_of_items() -> None:
+def test_real_image_plan_drops_extra_items_without_a_full_array_repair() -> None:
     calls = 0
     cover = (
         '{"imageTitle":"封面","usageScene":"文章封面","promptZh":"封面","promptEn":"cover",'
@@ -326,10 +327,10 @@ def test_real_image_plan_repairs_a_valid_plan_with_the_wrong_number_of_items() -
     plans = agent.image_prompts("design systems", "Design systems", "# Design systems", "TECH", 1)
 
     assert len(plans) == 1
-    assert calls == 2
+    assert calls == 1
 
 
-def test_real_image_plan_repairs_legacy_model_output_that_omits_semantic_metadata() -> None:
+def test_real_image_plan_fills_legacy_cover_metadata_without_an_extra_model_call() -> None:
     calls: list[str] = []
     responses = iter(
         [
@@ -351,12 +352,12 @@ def test_real_image_plan_repairs_legacy_model_output_that_omits_semantic_metadat
 
     plans = agent.image_prompts("design systems", "Design systems", "# Design systems", "TECH", 1)
 
-    assert len(calls) == 2
-    assert "目标 Schema" in calls[1]
+    assert len(calls) == 1
     assert plans[0].visual_role == "COVER"
+    assert plans[0].placement == "COVER" and plans[0].layout == "HERO"
 
 
-def test_real_image_plan_repairs_an_invalid_cover_placement_and_anchor() -> None:
+def test_real_image_plan_uses_server_cover_placement_without_an_extra_model_call() -> None:
     calls = 0
     responses = iter(
         [
@@ -383,14 +384,15 @@ def test_real_image_plan_repairs_an_invalid_cover_placement_and_anchor() -> None
 
     plans = agent.image_prompts("design systems", "Design systems", "# Design systems", "TECH", 1)
 
-    assert calls == 2
+    assert calls == 1
     assert plans[0].placement == "COVER"
+    assert plans[0].anchor_heading == "" and plans[0].anchor_paragraph == 0
 
 
 @pytest.mark.parametrize(
     ("invalid_stock_query", "expected_stock_query"),
     [
-        ("设计师 工作区", "abstract editorial concept"),
+        ("设计师 工作区", "editorial article cover"),
         ("designer", "designer concept"),
         ("designer workspace creative studio editorial photo", "designer workspace creative studio editorial"),
     ],
@@ -404,12 +406,12 @@ def test_real_image_plan_normalizes_nonconforming_stock_queries_without_an_extra
         [
             (
                 '[{"imageTitle":"概念图","usageScene":"导语后","promptZh":"概念图","promptEn":"concept",'
-                '"visualRole":"CONCEPT","placement":"AFTER_INTRO","anchorHeading":"","anchorParagraph":0,'
+                '"visualRole":"COVER","placement":"COVER","anchorHeading":"","anchorParagraph":0,'
                 f'"layout":"STANDARD","stockQuery":"{invalid_stock_query}"}}]'
             ),
             (
                 '[{"imageTitle":"概念图","usageScene":"导语后","promptZh":"概念图","promptEn":"concept",'
-                '"visualRole":"CONCEPT","placement":"AFTER_INTRO","anchorHeading":"","anchorParagraph":0,'
+                '"visualRole":"COVER","placement":"COVER","anchorHeading":"","anchorParagraph":0,'
                 '"layout":"STANDARD","stockQuery":"designer workspace"}]'
             ),
         ]
@@ -435,7 +437,7 @@ def test_real_image_plan_normalizes_a_non_ascii_stock_query_from_the_english_pro
     calls = 0
     response = (
         '[{"imageTitle":"概念图","usageScene":"导语后","promptZh":"概念图","promptEn":"abstract concept art",'
-        '"visualRole":"CONCEPT","placement":"AFTER_INTRO","anchorHeading":"","anchorParagraph":0,'
+        '"visualRole":"COVER","placement":"COVER","anchorHeading":"","anchorParagraph":0,'
         '"layout":"STANDARD","stockQuery":"抽象 概念 艺术"}]'
     )
 
@@ -458,7 +460,7 @@ def test_real_image_plan_uses_a_role_fallback_when_no_english_stock_terms_are_av
 
     response = (
         '[{"imageTitle":"概念图","usageScene":"导语后","promptZh":"概念图","promptEn":"概念插画",'
-        '"visualRole":"CONCEPT","placement":"AFTER_INTRO","anchorHeading":"","anchorParagraph":0,'
+        '"visualRole":"COVER","placement":"COVER","anchorHeading":"","anchorParagraph":0,'
         '"layout":"STANDARD","stockQuery":"抽象 概念 艺术"}]'
     )
 
@@ -469,4 +471,4 @@ def test_real_image_plan_uses_a_role_fallback_when_no_english_stock_terms_are_av
 
     plans = agent.image_prompts("design systems", "Design systems", "# Design systems", "TECH", 1)
 
-    assert plans[0].stock_query == "abstract editorial concept"
+    assert plans[0].stock_query == "editorial article cover"
