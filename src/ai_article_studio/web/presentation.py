@@ -209,7 +209,13 @@ _ACTION_PAGE_STEPS = {
 
 def resolve_page_navigation(article, next_action: str | None, requested_step: str | None) -> dict[str, object]:
     action = next_action or ""
-    if action == "GENERATE_OUTLINE" and getattr(article, "selected_title", None) and not getattr(article, "outline", None):
+    has_final = bool(article.final_markdown)
+    active = getattr(article, "status", None) in {"QUEUED", "RUNNING", "CANCELLING"}
+    if has_final and not active:
+        # A review recommendation is not consent to regenerate. Keep the
+        # author's existing delivery visible until they choose to revise it.
+        default_step = "delivery"
+    elif action == "GENERATE_OUTLINE" and getattr(article, "selected_title", None) and not getattr(article, "outline", None):
         # Confirming a title is not a navigation command. Let the author decide
         # when to launch outline generation from the title step.
         default_step = "title"
@@ -237,15 +243,16 @@ def resolve_page_navigation(article, next_action: str | None, requested_step: st
         )
     keys = [key for key, _ in _PAGE_STEPS]
     default_position = keys.index(default_step)
-    current_step = requested_step if requested_step in keys and keys.index(requested_step) <= default_position else default_step
+    reachable_position = len(keys) - 1 if has_final else default_position
+    current_step = requested_step if requested_step in keys and keys.index(requested_step) <= reachable_position else default_step
     workflow_steps = [
         {
             "key": key,
             "label": label,
             "position": position,
             "complete": position < default_position or action == "COMPLETE",
-            "reachable": position <= default_position,
-            "locked": position > default_position,
+            "reachable": position <= reachable_position,
+            "locked": position > reachable_position,
             "current": key == current_step,
             "workflow_current": key == default_step,
         }
@@ -257,7 +264,7 @@ def resolve_page_navigation(article, next_action: str | None, requested_step: st
 def page_context(article, settings: Settings, requested_step: str | None = None) -> dict:
     config, phase = load_json(article.model_config, ArticleModelConfig().model_dump(by_alias=True)), article.phase
     review = parse_review_result(article.review_report)
-    blocking_issues, review_issues = (review.blocking_issues, review.issues) if review else ([], [])
+    blocking_issues, review_issues = (review.blocking_issues, list(dict.fromkeys([*review.issues, *review.suggestions]))) if review else ([], [])
     review_needs_revision = bool(review and (not review.passed or blocking_issues))
     review_pending = bool(article.final_markdown and phase == "ARTICLE_COMPOSITION" and review is None)
     decision = decide_next_action(article, review, settings.max_auto_review_rounds)
@@ -311,11 +318,11 @@ def page_context(article, settings: Settings, requested_step: str | None = None)
         "review_issues": review_issues,
         "review_needs_revision": review_needs_revision,
         "review_pending": review_pending,
-        "can_export_final": bool(review and review.passed and not blocking_issues),
+        "can_export_final": bool(article.final_markdown),
         "content_html": render_markdown(article.content or ""),
         "final_html": render_markdown(reader_facing_markdown(article.final_markdown or ""), images=parsed_results),
         "display_error": display_error_message(article.error_message),
-        "phase_label": "待修订" if review_needs_revision else "待审核" if review_pending else phase_labels.get(phase, phase),
+        "phase_label": "建议人工确认" if review_needs_revision else "待审核" if review_pending else phase_labels.get(phase, phase),
         "next_action": next_action,
         "next_action_label": labels.get(next_action, "继续下一步"),
         # An outline is an explicit author checkpoint.  Do not expose the body
@@ -368,8 +375,10 @@ def task_card_context(article) -> dict[str, object]:
         state, label, icon, tone = "running", "进行中", "◌", "running"
     elif article.phase == "COMPLETED" and article.status == "SUCCESS" and review and review.passed and not review.blocking_issues:
         state, label, icon, tone = "completed", "已完成", "✓", "completed"
-    elif article.status == "FAILED" or attention:
+    elif article.status == "FAILED":
         state, label, icon, tone = "attention", "需处理", "!", "attention"
+    elif attention:
+        state, label, icon, tone = "attention", "待确认" if article.final_markdown else "需处理", "!", "attention"
     elif review_pending:
         state, label, icon, tone = "review_pending", "待审核", "•", "waiting"
     else:
@@ -524,7 +533,9 @@ def workflow_hint(article, title_options: list[dict], review: QualityReviewResul
             return "配图方案已生成；请选择图片来源后生成。"
         return "图片已就绪；下一步合成图文稿。"
     if article.phase == "ARTICLE_COMPOSITION":
-        return "评审未通过；你可以按建议自动修订一次，或手动调整后继续。" if review and not review.passed else "图文稿已合成，等待你手动发起审核。"
+        if review and not review.passed:
+            return "评审发现需确认的问题；你可以选择修订，也可以直接导出当前稿件。"
+        return "图文稿已合成，可以直接导出，也可以手动发起审核。"
     if article.phase == "COMPLETED":
         return "图文稿已完成，可以预览和导出。"
     return "任务暂时无法继续，请查看错误信息。"

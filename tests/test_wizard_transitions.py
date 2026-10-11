@@ -120,7 +120,8 @@ def test_wizard_assets_have_new_cache_versions() -> None:
     base = (Path(__file__).parents[1] / "src/ai_article_studio/templates/base.html").read_text(encoding="utf-8")
 
     assert "/static/app.css?v=20260911-task-flow1" in base
-    assert "/static/stream.js?v=20260911-task-flow1" in base
+    assert "/static/stream.js?v=20261011-advisory-review1" in base
+    assert "/static/client-ui.css?v=20261011-advisory-review1" in base
 
 
 def test_reconfirming_a_completed_title_stays_on_the_delivery_card(tmp_path: Path) -> None:

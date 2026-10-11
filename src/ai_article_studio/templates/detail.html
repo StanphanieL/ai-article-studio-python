@@ -193,20 +193,18 @@
 
   {% else %}
   <article class="content-card wizard-stage" id="delivery-stage" data-step-card="delivery">
-    <div class="card-heading"><h2>交付稿</h2><span class="delivery-state {% if review_needs_revision %}blocked{% endif %}">{% if review_needs_revision %}{{ review.score }}/100 · 尚不可交付{% elif review_pending %}待审核{% elif article.quality_score %}{{ article.quality_score }}/100{% else %}待评审{% endif %}</span></div>
+    <div class="card-heading"><h2>交付稿</h2><span class="delivery-state {% if review_needs_revision %}advisory{% endif %}">{% if review_needs_revision %}{{ review.score }}/100 · 建议人工确认{% elif review_pending %}待审核 · 可导出{% elif article.quality_score %}{{ article.quality_score }}/100{% else %}待评审{% endif %}</span></div>
     {% if article.final_markdown %}
       {% if review %}
-      <div class="review-summary {% if review_needs_revision %}blocked{% endif %}"><p class="score">{{ review.score }}<small>/100</small></p><div><strong>{% if review_needs_revision %}需先修订阻断问题{% else %}已通过质量检查{% endif %}</strong><p class="muted">{% if review_needs_revision %}评分不能覆盖交付阻断项。请先处理工作流面板中列出的 {{ review_blocking_issues|length }} 项问题。{% else %}图文稿已准备好，可预览或导出。{% endif %}</p></div></div>
-      {% if review_needs_revision and (review_issues or review_blocking_issues) %}<details class="review-details" data-review-issues><summary>查看修订建议</summary>{% if review_blocking_issues %}<div><strong>阻断项</strong><ul>{% for issue in review_blocking_issues %}<li>{{ issue }}</li>{% endfor %}</ul></div>{% endif %}{% if review_issues %}<div><strong>一般建议</strong><ul>{% for issue in review_issues %}<li>{{ issue }}</li>{% endfor %}</ul></div>{% endif %}</details>{% endif %}
+      <div class="review-summary {% if review_needs_revision %}advisory{% endif %}"><p class="score">{{ review.score }}<small>/100</small></p><div><strong>{% if review_needs_revision %}评审建议由你确认{% else %}已通过质量检查{% endif %}</strong><p class="muted">{% if review_needs_revision %}是否按建议修订？你也可以保留当前稿件，直接导出。{% else %}图文稿已准备好，可预览或导出。{% endif %}</p></div></div>
+      {% if review_issues or review_blocking_issues %}<details class="review-details" data-review-issues><summary>查看评审建议</summary>{% if review_blocking_issues %}<div><strong>建议优先核查</strong><ul>{% for issue in review_blocking_issues %}<li>{{ issue }}</li>{% endfor %}</ul></div>{% endif %}{% if review_issues %}<div><strong>改进建议</strong><ul>{% for issue in review_issues %}<li>{{ issue }}</li>{% endfor %}</ul></div>{% endif %}</details>{% endif %}
       {% endif %}
-      <details class="final-preview-details" data-final-preview-collapsed {% if not review_needs_revision %}open{% endif %}><summary><span>最终图文预览</span><span>{% if review_needs_revision %}修订后再核对图文稿{% else %}展开阅读{% endif %}</span></summary><section class="article-preview" data-final-preview aria-label="最终图文预览">{{ final_html | safe }}</section></details>
+      <details class="final-preview-details" data-final-preview-collapsed open><summary><span>最终图文预览</span><span>查看当前稿件</span></summary><section class="article-preview" data-final-preview aria-label="最终图文预览">{{ final_html | safe }}</section></details>
       {% if can_export_final %}
-      <section class="delivery-export" data-final-export aria-label="文章导出"><div><strong>完整图文稿已通过评审</strong><p>导出内容包含最终 Markdown、图文 HTML 与归因信息。</p></div><div class="export-links"><a href="/api/article/export-markdown/{{ article.task_id }}">Markdown</a><a href="/api/article/export-html/{{ article.task_id }}">HTML</a><a href="/api/article/export-zip/{{ article.task_id }}">ZIP</a></div></section>
-      {% else %}
-      <p class="delivery-export-hint">{% if review_needs_revision %}完成阻断修订后可导出完整图文稿。{% else %}手动审核图文稿并通过后可导出完整图文稿。{% endif %}</p>
+      <section class="delivery-export" id="delivery-export" data-final-export aria-label="文章导出"><div><strong>导出当前图文稿</strong><p>评审仅供参考，是否修订由你决定。</p></div><div class="export-links"><a href="/api/article/export-markdown/{{ article.task_id }}">Markdown</a><a href="/api/article/export-html/{{ article.task_id }}">HTML</a><a href="/api/article/export-zip/{{ article.task_id }}">ZIP</a></div></section>
       {% endif %}
     {% else %}
-    <p class="wizard-empty">图片准备完成后，合成图文稿并执行质量评审。</p>
+    <p class="wizard-empty">图片准备完成后，合成图文稿即可预览和导出。</p>
     {% endif %}
   </article>
   {% endif %}

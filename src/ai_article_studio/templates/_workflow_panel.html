@@ -15,9 +15,13 @@
       {% endif %}
       {% endif %}
       {% if can_apply_review_revision %}
-      <form method="post" action="/article/{{ article.task_id }}/review-revision" data-job-form data-job-url="/article/{{ article.task_id }}/jobs/review-revision"><button class="button secondary" type="submit" data-review-fix-action>按评审修订一次</button></form>
+      <form method="post" action="/article/{{ article.task_id }}/review-revision" data-job-form data-job-url="/article/{{ article.task_id }}/jobs/review-revision" data-confirm="将根据评审建议重新生成相关内容，当前图文稿会被替换。确认修订吗？"><button class="button secondary" type="submit" data-review-fix-action>按建议修订一次</button></form>
       {% elif article.phase == 'ARTICLE_COMPOSITION' and review and not review.passed %}
-      <span class="muted" data-review-manual-action>自动修订次数已用尽，请先手动调整。</span>
+      <span class="muted" data-review-manual-action>自动修订不可用，仍可手动编辑或直接导出。</span>
+      {% endif %}
+      {% if review_needs_revision and can_export_final %}
+      <a class="button secondary" href="/article/detail/{{ article.task_id }}?step=content#content-stage">手动编辑</a>
+      <a class="button primary" href="{% if current_step != 'delivery' %}/article/detail/{{ article.task_id }}?step=delivery{% endif %}#delivery-export">直接导出</a>
       {% endif %}
       {% if can_retry %}
       <form method="post" action="/article/{{ article.task_id }}/continue" data-job-form data-job-url="/article/{{ article.task_id }}/jobs/retry"><button class="button secondary" type="submit">重试失败步骤</button></form>
@@ -34,9 +38,9 @@
   <p class="error" data-job-error aria-live="assertive" hidden></p>
   {% if display_error %}<p class="error">{{ display_error }}</p>{% endif %}
   {% if review_needs_revision %}
-  <aside class="review-blocker" data-review-blockers aria-label="阻断交付问题">
-    <div><strong>阻断交付问题</strong><span>评分 {{ review.score }}/100，但当前不能导出为最终稿</span></div>
-    <ul>{% for issue in review_blocking_issues[:3] %}<li>{{ issue }}</li>{% endfor %}</ul>
+  <aside class="review-blocker review-advisory" data-review-advisory aria-label="评审建议">
+    <div><strong>建议人工确认</strong><span>评分 {{ review.score }}/100 · 不影响导出</span></div>
+    {% if review_blocking_issues or review_issues %}<ul>{% for issue in (review_blocking_issues + review_issues)[:3] %}<li>{{ issue }}</li>{% endfor %}</ul>{% endif %}
   </aside>
   {% endif %}
 </div>

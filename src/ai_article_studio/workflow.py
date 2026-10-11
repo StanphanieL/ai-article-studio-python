@@ -623,7 +623,7 @@ class ArticleWorkflow:
                             {
                                 "passed": False,
                                 "revision_action": review.revision_action or SupervisorAction.REGENERATE_CONTENT.value,
-                                "revision_reason": review.revision_reason or "存在阻断交付的问题，需要修订正文。",
+                                "revision_reason": review.revision_reason or "评审发现需人工确认的问题，可选择修订。",
                             }
                             if markdown_issues
                             else {}
@@ -903,7 +903,7 @@ class ArticleWorkflow:
                     "passed": False,
                     "blocking_issues": blocking_issues,
                     "revision_action": result.revision_action or SupervisorAction.REGENERATE_CONTENT.value,
-                    "revision_reason": result.revision_reason or "存在阻断交付的问题，需要修订正文。",
+                    "revision_reason": result.revision_reason or "评审发现需人工确认的问题，可选择修订。",
                 }
             )
         article.quality_score = result.score

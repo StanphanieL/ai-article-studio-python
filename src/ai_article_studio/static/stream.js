@@ -100,6 +100,11 @@
       if (!next || !current) throw new Error("页面结构不完整");
 
       const finalUrl = new URL(response.url || targetUrl, window.location.href);
+      // Fetch responses omit fragments. Preserve the requested export/step
+      // anchor when the server has not redirected to another wizard card.
+      if (!finalUrl.hash && finalUrl.pathname === targetUrl.pathname && finalUrl.search === targetUrl.search) {
+        finalUrl.hash = targetUrl.hash;
+      }
       const scrollPosition = preserveScroll ? { x: window.scrollX, y: window.scrollY } : null;
       replaceWorkspace(current, next, { animate });
       if (historyMode === "push") window.history.pushState({}, "", finalUrl);
@@ -161,6 +166,7 @@
     selectAll("[data-wizard-progress] a, .wizard-card-navigation a").forEach((link) => {
       link.addEventListener("click", (event) => {
         if (!canIntercept(event)) return;
+        if (link.getAttribute("href")?.startsWith("#")) return;
         event.preventDefault();
         void loadWorkspace(link.href, "push");
       });

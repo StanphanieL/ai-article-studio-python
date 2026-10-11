@@ -2,6 +2,10 @@
 .workspace-tools { grid-template-columns: minmax(0, 1fr); }
 .workspace-tools .config-card { margin: 0; min-width: 0; }
 .task-card-header { justify-content: flex-start; }
+.review-advisory { border-color: #eddbb6; background: #fffbf2; color: #79551e; }
+.delivery-state.advisory, .review-summary.advisory .score { color: #79551e !important; }
+.review-summary.advisory { border-bottom: 0; margin-bottom: 0; padding: 4px 0; }
+.delivery-export { scroll-margin-top: 110px; }
 
 @media (max-width: 820px) {
   .workspace-tools { grid-template-columns: 1fr; }

@@ -718,8 +718,8 @@ def test_completed_task_defaults_to_a_single_delivery_card(tmp_path: Path) -> No
     assert "查看最终 Markdown 源码" not in page.text
 
 
-def test_blocked_review_prioritizes_blockers_in_the_repair_card(tmp_path: Path) -> None:
-    """A repair action owns the active card even if an older final draft exists."""
+def test_review_concerns_leave_the_final_draft_exportable_and_revision_optional(tmp_path: Path) -> None:
+    """Review feedback cannot send the author away from their saved delivery."""
 
     with build_client(tmp_path) as client:
         article = client.post(
@@ -742,17 +742,38 @@ def test_blocked_review_prioritizes_blockers_in_the_repair_card(tmp_path: Path) 
             ),
         )
         page = client.get(f"/article/detail/{article['taskId']}")
+        saved = client.get(f"/api/article/{article['taskId']}").json()["data"]
+        content_page = client.get(f"/article/detail/{article['taskId']}?step=content")
+        list_status = client.get("/article/jobs/statuses").json()["data"]
 
-    assert "data-review-blockers" in page.text
-    assert "阻断交付问题" in page.text
+    assert "data-review-advisory" in page.text
+    assert "是否按建议修订" in page.text
     assert "代码围栏未闭合" in page.text
-    assert 'data-step-card="content"' in page.text
-    assert 'data-step-card="delivery"' not in page.text
+    assert 'data-step-card="content"' not in page.text
+    assert 'data-step-card="delivery"' in page.text
     assert "data-review-fix-action" in page.text
     assert "重新生成正文" not in page.text
     assert f'data-job-url="/article/{article["taskId"]}/jobs/next"' not in page.text
     assert "跳过确认，一键完成" not in page.text
-    assert 'aria-label="文章导出"' not in page.text
+    assert 'aria-label="文章导出"' in page.text
+    assert 'id="delivery-export"' in page.text
+    assert f'href="/article/detail/{article["taskId"]}?step=delivery#delivery-stage"' in content_page.text
+    assert 'href="#delivery-export"' in page.text
+    assert 'data-confirm="将根据评审建议' in page.text
+    assert next(item for item in list_status if item["taskId"] == article["taskId"])["label"] == "待确认"
+    assert "当前不能导出" not in page.text
+    assert "尚不可交付" not in page.text
+    assert "已通过质量检查" not in page.text
+    assert saved["finalMarkdown"] == article["finalMarkdown"]
+    assert json.loads(saved["reviewReport"])["passed"] is False
+    assert saved["reviewRound"] == 0
+
+
+def test_delivery_jump_preserves_its_anchor_during_partial_navigation() -> None:
+    script = (Path(__file__).parents[1] / "src/ai_article_studio/static/stream.js").read_text(encoding="utf-8")
+
+    assert "finalUrl.hash = targetUrl.hash" in script
+    assert 'link.getAttribute("href")?.startsWith("#")' in script
 
 
 def test_current_action_moves_into_the_bottom_step_navigation(tmp_path: Path) -> None:
@@ -820,6 +841,8 @@ def test_revision_limit_replaces_the_fix_button_with_a_manual_edit_hint(tmp_path
 
     assert "data-review-fix-action" not in page.text
     assert "data-review-manual-action" in page.text
+    assert "data-final-export" in page.text
+    assert "手动编辑" in page.text
 
 
 def test_one_click_is_an_optional_utility_instead_of_a_competing_primary_cta(tmp_path: Path) -> None:
@@ -905,8 +928,8 @@ def test_final_preview_uses_persisted_image_layout_metadata(tmp_path: Path) -> N
     assert 'class="article-figure layout-wide role-diagram"' in page.text
 
 
-def test_complete_exports_only_render_in_the_passing_delivery_card(tmp_path: Path) -> None:
-    """The final files must not be offered before a passing quality review."""
+def test_complete_exports_render_in_the_delivery_card_before_and_after_review(tmp_path: Path) -> None:
+    """A saved final document, not the review score, controls export visibility."""
 
     with build_client(tmp_path) as client:
         article = client.post(
@@ -930,8 +953,8 @@ def test_complete_exports_only_render_in_the_passing_delivery_card(tmp_path: Pat
         )
         after_review = client.get(f"/article/detail/{task_id}?step=delivery")
 
-    assert "data-final-export" not in before_review.text
-    assert 'aria-label="文章导出"' not in before_review.text
+    assert "data-final-export" in before_review.text
+    assert 'aria-label="文章导出"' in before_review.text
     assert "data-final-export" in after_review.text
     assert f"/api/article/export-markdown/{task_id}" in after_review.text
     assert f"/api/article/export-html/{task_id}" in after_review.text
@@ -961,12 +984,12 @@ def test_composed_draft_waits_for_manual_review_in_detail_and_live_list(tmp_path
     assert 'data-step-card="delivery"' in detail.text
     assert "待审核" in detail.text
     assert ">审核图文稿</button>" in detail.text
-    assert "data-final-export" not in detail.text
+    assert "data-final-export" in detail.text
     assert f'data-task-id="{task_id}" data-task-state="review_pending"' in list_page.text
     assert next(item for item in live_list if item["taskId"] == task_id)["label"] == "待审核"
 
 
-def test_one_click_requires_explicit_review_before_page_exports(tmp_path: Path) -> None:
+def test_one_click_offers_exports_while_review_remains_an_explicit_choice(tmp_path: Path) -> None:
     with build_client(tmp_path) as client:
         generated = client.post(
             "/api/article/one-click-generate",
@@ -985,7 +1008,7 @@ def test_one_click_requires_explicit_review_before_page_exports(tmp_path: Path) 
     assert 'data-step-card="delivery"' in awaiting_review.text
     assert ">审核图文稿</button>" in awaiting_review.text
     assert f'data-job-url="/article/{task_id}/jobs/next"' in awaiting_review.text
-    assert "data-final-export" not in awaiting_review.text
+    assert "data-final-export" in awaiting_review.text
     assert f'data-task-id="{task_id}" data-task-state="review_pending"' in awaiting_list.text
     assert next(item for item in awaiting_live_list if item["taskId"] == task_id)["label"] == "待审核"
     assert reviewed["reviewReport"] is not None

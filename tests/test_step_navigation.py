@@ -74,7 +74,7 @@ def test_navigation_keeps_completed_steps_reachable_but_falls_back_from_future_o
     assert [step["locked"] for step in future["workflow_steps"]] == [False, False, False, False, True]
 
 
-def test_navigation_uses_the_repair_action_over_stale_later_artifacts() -> None:
+def test_review_recommendation_does_not_hide_the_existing_delivery() -> None:
     state = article(
         selected_title="标题",
         outline="[]",
@@ -86,9 +86,21 @@ def test_navigation_uses_the_repair_action_over_stale_later_artifacts() -> None:
 
     navigation = resolve_page_navigation(state, "REGENERATE_CONTENT", requested_step="delivery")
 
-    assert navigation["default_step"] == "content"
-    assert navigation["current_step"] == "content"
-    assert navigation["workflow_steps"][3]["locked"] is True
+    assert navigation["default_step"] == "delivery"
+    assert navigation["current_step"] == "delivery"
+    assert navigation["workflow_steps"][4]["locked"] is False
+    assert resolve_page_navigation(state, "REGENERATE_CONTENT", requested_step="content")["current_step"] == "content"
+
+
+def test_active_revision_keeps_the_last_saved_delivery_accessible() -> None:
+    state = article(status="RUNNING", selected_title="标题", content="# 正文", final_markdown="# 已保存的图文稿")
+
+    current = resolve_page_navigation(state, "REGENERATE_CONTENT", requested_step=None)
+    delivery = resolve_page_navigation(state, "REGENERATE_CONTENT", requested_step="delivery")
+
+    assert current["default_step"] == "content"
+    assert delivery["current_step"] == "delivery"
+    assert delivery["workflow_steps"][4]["reachable"] is True
 
 
 def test_generated_outline_stays_on_the_outline_card_until_the_user_saves_it() -> None:
