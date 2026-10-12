@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 
 from ..schemas import (
     ArticleCreateRequest,
@@ -18,6 +18,7 @@ from ..schemas import (
 )
 from .dependencies import JobRunnerDep, WorkflowDep
 from .presentation import article_payload, export_response, log_payload, wait_for_one_click_api
+from .streaming import ClosingStreamingResponse
 
 router = APIRouter()
 
@@ -83,9 +84,13 @@ def generate_content(task_id: str, workflow: WorkflowDep) -> BaseResponse[dict]:
 
 
 @router.get("/api/article/real-stream-generate-content/{task_id}")
-def stream_content(task_id: str, workflow: WorkflowDep) -> StreamingResponse:
+def stream_content(task_id: str, workflow: WorkflowDep) -> ClosingStreamingResponse:
     workflow.start_stream_content(task_id)
-    return StreamingResponse(workflow.stream_content(task_id), media_type="text/event-stream")
+    return ClosingStreamingResponse(
+        workflow.stream_content(task_id),
+        on_unstarted_close=lambda: workflow.interrupt_stream_content(task_id),
+        media_type="text/event-stream",
+    )
 
 
 @router.post("/api/article/save-content")

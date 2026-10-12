@@ -101,11 +101,11 @@ class ArticleWorkflow:
             self._background_job_execution.reset(token)
 
     @contextmanager
-    def task_write_lock(self, task_id: str) -> Iterator[None]:
-        """Serialize mutations for one task while allowing unrelated tasks to proceed."""
+    def task_write_lock(self, task_id: str, *, wait: bool = False) -> Iterator[None]:
+        """Serialize writes; internal finalizers wait, user submissions fail fast."""
 
         lock = self._lock_for_task(task_id)
-        if not lock.acquire(blocking=self._background_job_execution.get()):
+        if not lock.acquire(blocking=wait or self._background_job_execution.get()):
             raise WorkflowBusyError("任务正在后台执行中，请等待完成后再编辑。")
         try:
             yield
@@ -282,77 +282,101 @@ class ArticleWorkflow:
                 return article
 
     def stream_content(self, task_id: str) -> Iterator[str]:
+        """Stream without carrying a thread-owned lock or session across yields.
+
+        The persisted RUNNING reservation rejects other writers while the
+        provider is active. Each database mutation has its own short critical
+        section because the HTTP thread pool may resume this iterator on a
+        different worker, or stop consuming immediately after a terminal event.
+        """
         cancelled = False
-        interrupted = False
-        completed = False
+        terminal = False
+        source: Iterator[str] | None = None
+        chunks: list[str] = []
+        started = time.perf_counter()
         try:
-            with self.task_write_lock(task_id):
+            with self.task_write_lock(task_id, wait=True):
+                article = self.get(task_id)
+                outline = self._outline(article)
+                if article.status not in {ArticleStatus.RUNNING.value, ArticleStatus.CANCELLING.value}:
+                    raise WorkflowValidationError("请先启动流式正文生成")
+                if not article.selected_title or not outline:
+                    raise WorkflowValidationError("请先确认标题并生成大纲")
+                config = self._config(article)
+                agent = self._agent_for(article)
+            if self.cancellation_requested(task_id):
+                raise WorkflowCancellationRequested("任务已请求取消")
+            yield _sse("progress", {"message": "正在生成正文"})
+            source = agent.stream_content(
+                article.topic,
+                article.selected_title,
+                outline,
+                article.style,
+                config.content_length_level.value,
+            )
+            for chunk in source:
+                if self.cancellation_requested(task_id):
+                    raise WorkflowCancellationRequested("任务已请求取消")
+                chunks.append(chunk)
+                yield _sse("content", {"content": chunk})
+
+            with self.task_write_lock(task_id, wait=True):
                 with self.sessions() as session:
                     article = self._get_article(session, task_id)
-                    outline = self._outline(article)
-                    if article.status != ArticleStatus.RUNNING.value:
-                        raise WorkflowValidationError("请先启动流式正文生成")
-                    if not article.selected_title or not outline:
-                        raise WorkflowValidationError("请先确认标题并生成大纲")
-                    config = self._config(article)
-                    agent = self._agent_for(article)
-                    chunks: list[str] = []
-                    started = time.perf_counter()
-                    yield _sse("progress", {"message": "正在生成正文"})
-                    try:
-                        for chunk in agent.stream_content(
-                            article.topic,
-                            article.selected_title,
-                            outline,
-                            article.style,
-                            config.content_length_level.value,
-                        ):
-                            if self.cancellation_requested(task_id):
-                                raise WorkflowCancellationRequested("任务已请求取消")
-                            chunks.append(chunk)
-                            yield _sse("content", {"content": chunk})
-                        if self.cancellation_requested(task_id):
-                            raise WorkflowCancellationRequested("任务已请求取消")
-                        self._set_content(article, "".join(chunks))
-                        article.error_message = None
-                        self._log(session, task_id, "ContentGeneratorAgent-RealStream", "stream", article.content, started)
-                        session.commit()
-                        # A completed result is already durable before the
-                        # final SSE event is written.  If the browser closes
-                        # immediately after this yield, do not regress it to a
-                        # retryable failure.
-                        completed = True
-                        yield _sse("done", {"phase": article.phase, "status": article.status})
-                    except WorkflowCancellationRequested:
-                        cancelled = True
-                        session.rollback()
-                    except GeneratorExit:
-                        # EventSource is tied to the currently visible card.
-                        # Navigating away closes this generator; leaving the
-                        # DB row RUNNING would permanently block the task.
-                        interrupted = True
-                        session.rollback()
-                        raise
-                    except Exception as error:
-                        if self.cancellation_requested(task_id):
-                            cancelled = True
-                            session.rollback()
-                        else:
+                    if self.cancellation_requested(task_id):
+                        raise WorkflowCancellationRequested("任务已请求取消")
+                    self._set_content(article, "".join(chunks))
+                    article.error_message = None
+                    article.supervisor_reason = "正文已生成，可以生成配图方案"
+                    article.update_time = self._clock()
+                    self._log(session, task_id, "ContentGeneratorAgent-RealStream", "stream", article.content, started)
+                    session.commit()
+                    final_event = _sse("done", {"phase": article.phase, "status": article.status})
+                    terminal = True
+        except WorkflowCancellationRequested:
+            cancelled = True
+        except Exception as error:
+            with self.task_write_lock(task_id, wait=True):
+                if self.cancellation_requested(task_id):
+                    cancelled = True
+                else:
+                    with self.sessions() as session:
+                        article = self._get_article(session, task_id)
+                        if article.status == ArticleStatus.RUNNING.value:
                             article.status = ArticleStatus.FAILED.value
                             article.error_message = _safe_error_message(error)
+                            article.update_time = self._clock()
                             self._log(session, task_id, "ContentGeneratorAgent-RealStream", "stream", None, started, error)
                             session.commit()
-                            yield _sse("fail", {"message": "正文流式生成失败"})
+                        final_event = _sse("fail", {"message": "正文流式生成失败"})
+                        terminal = True
         finally:
-            if cancelled or self.cancellation_requested(task_id):
-                try:
-                    self.permanently_delete(task_id)
-                except ValueError:
-                    pass
-            elif interrupted and not completed:
-                self._mark_interrupted_stream_retryable(task_id)
+            try:
+                close_source = getattr(source, "close", None)
+                if callable(close_source):
+                    close_source()
+            finally:
+                if not terminal:
+                    self.interrupt_stream_content(task_id)
+
+        # Release every resource before exposing SUCCESS/FAILED to EventSource.
+        # Closing this response later must not touch a newly started image job.
         if cancelled:
             yield _sse("fail", {"message": "任务已取消并永久删除"})
+        else:
+            yield final_event
+
+    def interrupt_stream_content(self, task_id: str) -> None:
+        """Release an abandoned SSE reservation without discarding saved content."""
+
+        with self.task_write_lock(task_id, wait=True):
+            if self.cancellation_requested(task_id):
+                try:
+                    self.permanently_delete(task_id)
+                except WorkflowValidationError:
+                    pass
+            else:
+                self._mark_interrupted_stream_retryable(task_id)
 
     def save_content(self, task_id: str, content: str) -> Article:
         normalized_content = content.strip()
@@ -922,13 +946,14 @@ class ArticleWorkflow:
     def _mark_interrupted_stream_retryable(self, task_id: str) -> None:
         """Turn an abandoned SSE response into a normal, retryable content job."""
 
-        with self.task_write_lock(task_id):
+        with self.task_write_lock(task_id, wait=True):
             with self.sessions() as session:
                 article = self._get_article(session, task_id)
                 # A cancellation request wins over a client disconnect and is
                 # handled by the caller's deletion path.  Likewise, never
-                # overwrite a successfully persisted stream result.
-                if article.status != ArticleStatus.RUNNING.value or article.content:
+                # overwrite a successfully persisted stream result. An older
+                # draft can still exist during an interrupted regeneration.
+                if article.status != ArticleStatus.RUNNING.value or article.supervisor_action != SupervisorAction.GENERATE_CONTENT.value:
                     return
                 article.status = ArticleStatus.FAILED.value
                 article.supervisor_action = SupervisorAction.GENERATE_CONTENT.value

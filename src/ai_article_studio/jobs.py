@@ -100,6 +100,7 @@ class JobRunner:
         provider call must reach its next safe cancellation boundary first.
         """
 
+        delete_now = False
         with self._lock:
             if task_id in self._deleting_task_ids:
                 return False
@@ -114,18 +115,18 @@ class JobRunner:
                     delete_now = True
                 else:
                     delete_now = False
-            else:
-                article = self.workflow.get(task_id)
-                if article.status in {"QUEUED", "RUNNING", "CANCELLING"}:
-                    self._cancelling_task_ids.add(task_id)
-                    # SSE work is not represented by a JobRunner Future. Its
-                    # persisted CANCELLING state blocks new workflow starts.
-                    self._deleting_task_ids.discard(task_id)
-                    delete_now = False
-                else:
-                    delete_now = True
 
         try:
+            if future is None:
+                # SSE has no Future. Coordinate with its short completion /
+                # disconnect critical section, not an earlier RUNNING snapshot.
+                # Do not hold the runner lock while waiting for the task lock.
+                with self.workflow.task_write_lock(task_id, wait=True):
+                    article = self.workflow.get(task_id)
+                    if article.status in {"QUEUED", "RUNNING", "CANCELLING"}:
+                        self.workflow.request_cancellation(task_id)
+                        return False
+                    return self.workflow.permanently_delete(task_id)
             if delete_now:
                 return self.workflow.permanently_delete(task_id)
             self.workflow.request_cancellation(task_id)
@@ -136,7 +137,7 @@ class JobRunner:
                 self._deleting_task_ids.discard(task_id)
             raise
         finally:
-            if delete_now:
+            if delete_now or future is None:
                 with self._lock:
                     self._deleting_task_ids.discard(task_id)
 
